@@ -1,0 +1,12 @@
+LAMONS 3200LS PROJECT COST SUMMARY
+==================================================
+
+Generated: 2025-07-30 15:26:32
+Total Project Cost: $0.00
+
+Component Breakdown:
+------------------------------
+
+Delivery (10% of materials): $0.00
+Material Subtotal: $0.00
+TOTAL PROJECT COST: $0.00

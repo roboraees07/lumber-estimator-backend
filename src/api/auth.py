@@ -1,0 +1,247 @@
+#!/usr/bin/env python3
+"""
+Authentication API Endpoints for Lumber Estimator
+Handles user registration, login, and account approval
+"""
+
+from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel, EmailStr
+from typing import Optional, Dict, Any, List
+import os
+
+from ..database.auth_models import AuthDatabaseManager, UserAuthManager, UserRole, AccountStatus
+
+# Initialize router
+router = APIRouter(prefix="/auth", tags=["Authentication"])
+
+# Initialize database and auth manager
+auth_db = AuthDatabaseManager()
+auth_manager = UserAuthManager(auth_db)
+
+# Security scheme
+security = HTTPBearer()
+
+# Pydantic models for request/response
+class UserRegistration(BaseModel):
+    username: str
+    email: EmailStr
+    password: str
+    role: UserRole
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    phone: Optional[str] = None
+    company_name: Optional[str] = None
+    business_license: Optional[str] = None
+    address: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    zip_code: Optional[str] = None
+
+class UserLogin(BaseModel):
+    username: str  # Can be username or email
+    password: str
+
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: Dict[str, Any]
+
+class UserProfileUpdate(BaseModel):
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    phone: Optional[str] = None
+    company_name: Optional[str] = None
+    business_license: Optional[str] = None
+    address: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    zip_code: Optional[str] = None
+
+class ApprovalRequest(BaseModel):
+    user_id: int
+    approved: bool
+    rejection_reason: Optional[str] = None
+
+# Dependency to get current user from JWT token
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict[str, Any]:
+    """Get current authenticated user from JWT token"""
+    token = credentials.credentials
+    payload = auth_manager.verify_jwt_token(token)
+    
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    user = auth_manager.get_user_by_id(payload['user_id'])
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    return user
+
+# Dependency to check if user is admin
+async def get_admin_user(current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
+    """Check if current user is admin"""
+    if current_user['role'] != 'admin':
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required"
+        )
+    return current_user
+
+# Dependency to check if user is contractor
+async def get_contractor_user(current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
+    """Check if current user is contractor"""
+    if current_user['role'] != 'contractor':
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Contractor access required"
+        )
+    return current_user
+
+# Dependency to check if user is estimator
+async def get_estimator_user(current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
+    """Check if current user is estimator"""
+    if current_user['role'] != 'estimator':
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Estimator access required"
+        )
+    return current_user
+
+@router.post("/register", response_model=Dict[str, Any])
+async def register_user(user_data: UserRegistration):
+    """Register new user account"""
+    try:
+        # Validate role restrictions
+        if user_data.role == UserRole.ADMIN:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Admin accounts cannot be created via registration"
+            )
+        
+        # Create user
+        user_id = auth_manager.create_user(user_data.dict())
+        
+        return {
+            "message": "User registered successfully",
+            "user_id": user_id,
+            "status": "pending_approval" if user_data.role != UserRole.ADMIN else "approved",
+            "note": "Your account is pending admin approval" if user_data.role != UserRole.ADMIN else "Account created successfully"
+        }
+    
+    except Exception as e:
+        if "UNIQUE constraint failed" in str(e):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Username or email already exists"
+            )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Registration failed: {str(e)}"
+        )
+
+@router.post("/login", response_model=LoginResponse)
+async def login_user(login_data: UserLogin):
+    """Authenticate user and return JWT token"""
+    # Authenticate user
+    user = auth_manager.authenticate_user(login_data.username, login_data.password)
+    
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid username/email or password"
+        )
+    
+    # Check if account is approved
+    if user['account_status'] != 'approved':
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Account is {user['account_status']}. Please wait for admin approval."
+        )
+    
+    # Generate JWT token
+    access_token = auth_manager.generate_jwt_token(user)
+    
+    return LoginResponse(
+        access_token=access_token,
+        user=user
+    )
+
+@router.get("/profile", response_model=Dict[str, Any])
+async def get_user_profile(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """Get current user's profile"""
+    return current_user
+
+@router.put("/profile", response_model=Dict[str, Any])
+async def update_user_profile(
+    profile_data: UserProfileUpdate,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Update current user's profile"""
+    success = auth_manager.update_user_profile(current_user['id'], profile_data.dict(exclude_unset=True))
+    
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update profile"
+        )
+    
+    return {"message": "Profile updated successfully"}
+
+@router.get("/pending-approvals", response_model=List[Dict[str, Any]])
+async def get_pending_approvals(admin_user: Dict[str, Any] = Depends(get_admin_user)):
+    """Get list of users pending approval (Admin only)"""
+    return auth_manager.get_pending_approvals()
+
+@router.post("/approve-user", response_model=Dict[str, Any])
+async def approve_user_account(
+    approval_request: ApprovalRequest,
+    admin_user: Dict[str, Any] = Depends(get_admin_user)
+):
+    """Approve or reject user account (Admin only)"""
+    if approval_request.approved:
+        success = auth_manager.approve_user(approval_request.user_id, admin_user['id'])
+        message = "User approved successfully"
+    else:
+        if not approval_request.rejection_reason:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Rejection reason is required when rejecting a user"
+            )
+        success = auth_manager.approve_user(approval_request.user_id, admin_user['id'], approval_request.rejection_reason)
+        message = "User rejected successfully"
+    
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to process approval request"
+        )
+    
+    return {"message": message}
+
+@router.get("/users", response_model=List[Dict[str, Any]])
+async def get_all_users(admin_user: Dict[str, Any] = Depends(get_admin_user)):
+    """Get all users (Admin only)"""
+    # This would need to be implemented in the auth manager
+    # For now, return a placeholder
+    return {"message": "User list endpoint - to be implemented"}
+
+@router.post("/logout", response_model=Dict[str, Any])
+async def logout_user(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """Logout user (invalidate token)"""
+    # In a production system, you'd add the token to a blacklist
+    # For now, just return success
+    return {"message": "Logged out successfully"}
+
+@router.get("/me", response_model=Dict[str, Any])
+async def get_current_user_info(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """Get current user information"""
+    return current_user
