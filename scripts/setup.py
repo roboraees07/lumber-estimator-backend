@@ -17,7 +17,7 @@ def run_command(command, description):
         return True
     except subprocess.CalledProcessError as e:
         print(f"❌ {description} failed: {e}")
-        print(f"Error output: {e.stderr}")
+        print(f"Error output: {e.stder` r}")
         return False
 
 def create_directories():

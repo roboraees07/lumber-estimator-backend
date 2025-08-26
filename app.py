@@ -21,7 +21,8 @@ if __name__ == "__main__":
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=8003,  # Use different port to avoid conflict
+        port=8003,  # Use port 8003 as documented in README
         reload=False,  # Disable reload to avoid warning
         log_level="info"
     )
+

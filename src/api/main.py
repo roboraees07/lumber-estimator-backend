@@ -594,6 +594,7 @@ async def estimate_lumber_project(
             response_data["estimates_by_category"][category] = []
             for est in estimates:
                 response_data["estimates_by_category"][category].append({
+                    "sku": est.sku,
                     "description": est.item.description,
                     "dimensions": est.item.dimensions,
                     "material": est.item.material,

@@ -1,0 +1,44 @@
+name: Test Project Setup
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test-setup:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.11"
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Test imports
+      run: |
+        python -c "import fastapi; print('FastAPI imported successfully')"
+        python -c "import uvicorn; print('Uvicorn imported successfully')"
+        python -c "import google.generativeai; print('Google Generative AI imported successfully')"
+    
+    - name: Test project structure
+      run: |
+        python -c "from pathlib import Path; assert Path('src').exists(), 'src directory missing'; print('Project structure OK')"
+        python -c "from pathlib import Path; assert Path('tests').exists(), 'tests directory missing'; print('Tests directory OK')"
+        python -c "from pathlib import Path; assert Path('README.md').exists(), 'README missing'; print('README OK')"
+    
+    - name: Test setup.py
+      run: |
+        python setup.py check --strict
+    
+    - name: Run basic tests
+      run: |
+        pytest tests/ -v --tb=short 

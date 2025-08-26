@@ -32,6 +32,7 @@ class LumberEstimate:
     total_cost: float
     area_coverage: str
     notes: str
+    sku: str  # Add SKU field
 
 @dataclass
 class ProjectEstimate:
@@ -128,7 +129,8 @@ class LumberEstimationEngine:
                 unit_price=best_stud.unit_price,
                 total_cost=best_stud.unit_price * studs_needed,
                 area_coverage=f"Wall studs for {area.perimeter_feet:.1f} linear feet",
-                notes=f"Spaced at {stud_spacing_inches}\" centers, height: {area.height_feet:.1f}'"
+                notes=f"Spaced at {stud_spacing_inches}\" centers, height: {area.height_feet:.1f}'",
+                sku=best_stud.sku
             ))
         
         if best_plate:
@@ -138,7 +140,8 @@ class LumberEstimationEngine:
                 unit_price=best_plate.unit_price,
                 total_cost=best_plate.unit_price * plates_needed,
                 area_coverage=f"Top and bottom plates for {area.perimeter_feet:.1f} linear feet",
-                notes="Standard construction practice"
+                notes="Standard construction practice",
+                sku=best_plate.sku
             ))
         
         return estimates
@@ -180,7 +183,8 @@ class LumberEstimationEngine:
                 unit_price=best_joist.unit_price,
                 total_cost=best_joist.unit_price * joists_needed,
                 area_coverage=f"Floor joists for {area.area_sqft:.1f} sq ft",
-                notes=f"Spaced at {joist_spacing_inches}\" centers, span: {joist_length:.1f}'"
+                notes=f"Spaced at {joist_spacing_inches}\" centers, span: {joist_length:.1f}'",
+                sku=best_joist.sku
             ))
         
         # Add joist hangers
@@ -196,7 +200,8 @@ class LumberEstimationEngine:
                         unit_price=item.unit_price,
                         total_cost=item.unit_price * packs_needed,
                         area_coverage=f"Joist hangers for {joists_needed} joists",
-                        notes=f"{packs_needed} packs of 25"
+                        notes=f"{packs_needed} packs of 25",
+                        sku=item.sku
                     ))
                 break
         
@@ -241,7 +246,8 @@ class LumberEstimationEngine:
                 unit_price=best_rafter.unit_price,
                 total_cost=best_rafter.unit_price * rafters_needed,
                 area_coverage=f"Roof rafters for {area.area_sqft:.1f} sq ft",
-                notes=f"Spaced at {rafter_spacing_inches}\" centers, length: {rafter_length:.1f}'"
+                notes=f"Spaced at {rafter_spacing_inches}\" centers, length: {rafter_length:.1f}'",
+                sku=best_rafter.sku
             ))
         
         return estimates
@@ -264,7 +270,8 @@ class LumberEstimationEngine:
                     unit_price=item.unit_price,
                     total_cost=item.unit_price * wall_sheets_needed,
                     area_coverage=f"Wall sheathing for {wall_area:.1f} sq ft",
-                    notes="4x8 OSB sheets"
+                    notes="4x8 OSB sheets",
+                    sku=item.sku
                 ))
                 break
         
@@ -280,7 +287,8 @@ class LumberEstimationEngine:
                     unit_price=item.unit_price,
                     total_cost=item.unit_price * roof_sheets_needed,
                     area_coverage=f"Roof sheathing for {roof_area:.1f} sq ft",
-                    notes="4x8 OSB sheets with 10% overhang"
+                    notes="4x8 OSB sheets with 10% overhang",
+                    sku=item.sku
                 ))
                 break
         
@@ -307,7 +315,8 @@ class LumberEstimationEngine:
                         unit_price=item.unit_price,
                         total_cost=item.unit_price * openings_needed,
                         area_coverage=f"Headers for {openings_needed} openings",
-                        notes="LVL headers for doors and windows"
+                        notes="LVL headers for doors and windows",
+                        sku=item.sku
                     ))
                     break
         
@@ -385,6 +394,7 @@ class LumberEstimationEngine:
             data["estimates_by_category"][category] = []
             for est in estimates:
                 data["estimates_by_category"][category].append({
+                    "sku": est.sku,
                     "description": est.item.description,
                     "dimensions": est.item.dimensions,
                     "material": est.item.material,
