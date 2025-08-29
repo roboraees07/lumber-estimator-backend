@@ -561,51 +561,65 @@ class LumberPDFExtractor:
         detailed_items = []
         
         for material in matched_materials:
-            extracted_item = material["extracted_item"]
-            
-            # Create simple item detail
-            item_detail = {
-                "item_name": extracted_item["item_name"],
-                "category": extracted_item["category"],
-                "quantity_needed": material["quantity_needed"],
-                "unit": extracted_item["unit"],
-                "dimensions": extracted_item.get("dimensions", ""),
-                "location": extracted_item.get("location", ""),
-                "database_match": "Available" if material["database_match"] else "Quotation needed",
-                "unit_price": material["database_match"]["unit_price"] if material["database_match"] else "Quotation needed",
-                "total_price": material["total_cost"] if isinstance(material["total_cost"], (int, float)) else "Quotation needed",
-                "available_contractors": material["available_contractors"],
-                "recommended_contractor": material["recommended_contractor"]
-            }
-            
-            # Add database details if available
-            if material["database_match"]:
-                item_detail.update({
-                    "item_id": material["database_match"]["item_id"],
-                    "description": material["database_match"]["description"],
-                    "material": material["database_match"]["material"],
-                    "grade": material["database_match"]["grade"]
-                })
-            
-            # Add lumber-specific details for lumber items
-            if extracted_item["category"] in ["Walls", "Joist", "Roof", "Cornice and Decking", "Post & Beams"]:
-                if extracted_item.get("dimensions"):
-                    dims = extracted_item["dimensions"].split("X")
-                    if len(dims) >= 2:
-                        item_detail["lumber_specs"] = {
-                            "width_inches": dims[0] if len(dims) > 0 else "",
-                            "thickness_inches": dims[1] if len(dims) > 1 else "",
-                            "length_feet": dims[2] if len(dims) > 2 else ""
-                        }
+            try:
+                extracted_item = material.get("extracted_item", {})
                 
-                # Add construction standards info
-                item_detail["construction_info"] = {
-                    "spacing": "16\" on center" if "stud" in extracted_item["item_name"].lower() else "24\" on center" if "rafter" in extracted_item["item_name"].lower() else "As specified",
-                    "waste_factor": "15%",
-                    "installation_notes": "Standard construction practices apply"
+                # Safely get database match info
+                database_match = material.get("database_match")
+                has_database_match = database_match and isinstance(database_match, dict)
+                
+                # Create simple item detail with safe access
+                item_detail = {
+                    "item_name": extracted_item.get("item_name", "Unknown Item"),
+                    "category": extracted_item.get("category", "Unknown"),
+                    "quantity_needed": material.get("quantity_needed", 0),
+                    "unit": extracted_item.get("unit", "each"),
+                    "dimensions": extracted_item.get("dimensions", ""),
+                    "location": extracted_item.get("location", ""),
+                    "database_match": "Available" if has_database_match else "Quotation needed",
+                    "unit_price": database_match.get("unit_price", "Quotation needed") if has_database_match else "Quotation needed",
+                    "total_price": material.get("total_cost", "Quotation needed") if isinstance(material.get("total_cost"), (int, float)) else "Quotation needed",
+                    "available_contractors": material.get("available_contractors", []),
+                    "recommended_contractor": material.get("recommended_contractor", "Contact for quote")
                 }
-            
-            detailed_items.append(item_detail)
+                
+                # Add database details if available
+                if has_database_match:
+                    item_detail.update({
+                        "item_id": database_match.get("item_id", "Unknown"),
+                        "description": database_match.get("description", "Unknown"),
+                        "material": database_match.get("material", "Unknown"),
+                        "grade": database_match.get("grade", "Unknown")
+                    })
+                
+                # Add lumber-specific details for lumber items
+                category = extracted_item.get("category", "")
+                if category in ["Walls", "Joist", "Roof", "Cornice and Decking", "Post & Beams"]:
+                    dimensions = extracted_item.get("dimensions", "")
+                    if dimensions:
+                        dims = dimensions.split("X")
+                        if len(dims) >= 2:
+                            item_detail["lumber_specs"] = {
+                                "width_inches": dims[0] if len(dims) > 0 else "",
+                                "thickness_inches": dims[1] if len(dims) > 1 else "",
+                                "length_feet": dims[2] if len(dims) > 2 else ""
+                            }
+                    
+                    # Add construction standards info
+                    item_name = extracted_item.get("item_name", "").lower()
+                    item_detail["construction_info"] = {
+                        "spacing": "16\" on center" if "stud" in item_name else "24\" on center" if "rafter" in item_name else "As specified",
+                        "waste_factor": "15%",
+                        "installation_notes": "Standard construction practices apply"
+                    }
+                
+                detailed_items.append(item_detail)
+                
+            except Exception as e:
+                print(f"⚠️ Error processing material in detailed items: {e}")
+                print(f"   Material data: {material}")
+                # Continue with next material instead of crashing
+                continue
         
         return detailed_items
     
@@ -619,77 +633,88 @@ class LumberPDFExtractor:
         }
         
         for material in matched_materials:
-            extracted_item = material["extracted_item"]
-            category = extracted_item["category"]
-            
-            # Process all materials (not just lumber)
-            lumber_estimates["total_lumber_items"] += 1
-            
-            # Initialize category if not exists
-            if category not in lumber_estimates["lumber_by_category"]:
-                lumber_estimates["lumber_by_category"][category] = {
-                    "items": [],
-                    "total_quantity": 0,
-                    "total_cost": 0
-                }
-            
-            # Create detailed lumber specification
-            lumber_spec = {
-                "item_name": extracted_item["item_name"],
-                "sku": material["database_match"]["sku"] if material["database_match"] else "Quotation not available",
-                "category": category,
-                "specifications": {
-                    "dimensions": extracted_item.get("dimensions", ""),
-                    "material": material["database_match"]["material"] if material["database_match"] else "Unknown",
-                    "grade": material["database_match"]["grade"] if material["database_match"] else "Unknown",
-                    "length": extracted_item.get("dimensions", "").split("X")[-1] if "X" in extracted_item.get("dimensions", "") else "",
-                    "width": extracted_item.get("dimensions", "").split("X")[0] if "X" in extracted_item.get("dimensions", "") else "",
-                    "thickness": extracted_item.get("dimensions", "").split("X")[1] if len(extracted_item.get("dimensions", "").split("X")) > 2 else ""
-                },
-                "quantity": {
-                    "needed": material["quantity_needed"],
-                    "unit": extracted_item["unit"],
-                    "location": extracted_item.get("location", "")
-                },
-                "pricing": {
-                    "unit_price": material["database_match"]["unit_price"] if material["database_match"] else "Quotation not available",
-                    "total_price": material["total_cost"] if isinstance(material["total_cost"], (int, float)) else "Quotation not available",
-                    "price_per_unit": f"${material['database_match']['unit_price']:.2f}" if material["database_match"] and isinstance(material["database_match"]["unit_price"], (int, float)) else "Quotation not available"
-                },
-                "sourcing": {
-                    "available_contractors": material["available_contractors"],
-                    "recommended_contractor": material["recommended_contractor"],
-                    "database_match": "Available" if material["database_match"] else "Quotation not available"
-                }
-            }
-            
-            # Add database details if available
-            if material["database_match"]:
-                lumber_spec["database_info"] = {
-                    "item_id": material["database_match"]["item_id"],
-                    "description": material["database_match"]["description"],
-                    "subcategory": material["database_match"]["subcategory"]
-                }
-                lumber_spec["pricing"]["unit_price"] = material["database_match"]["unit_price"]
-                lumber_spec["pricing"]["total_price"] = material["total_cost"]
+            try:
+                extracted_item = material.get("extracted_item", {})
+                category = extracted_item.get("category", "Unknown")
                 
-                # Add to total cost
-                if isinstance(material["total_cost"], (int, float)):
-                    lumber_estimates["total_lumber_cost"] += material["total_cost"]
-                    lumber_estimates["lumber_by_category"][category]["total_cost"] += material["total_cost"]
-            
-            # Add to category summary
-            lumber_estimates["lumber_by_category"][category]["items"].append({
-                "item_name": extracted_item["item_name"],
-                "sku": material["database_match"]["sku"] if material["database_match"] else "Quotation not available",
-                "quantity": material["quantity_needed"],
-                "unit_price": lumber_spec["pricing"]["unit_price"],
-                "total_cost": lumber_spec["pricing"]["total_price"]
-            })
-            lumber_estimates["lumber_by_category"][category]["total_quantity"] += material["quantity_needed"]
-            
-            # Add to detailed specs
-            lumber_estimates["detailed_lumber_specs"].append(lumber_spec)
+                # Process all materials (not just lumber)
+                lumber_estimates["total_lumber_items"] += 1
+                
+                # Initialize category if not exists
+                if category not in lumber_estimates["lumber_by_category"]:
+                    lumber_estimates["lumber_by_category"][category] = {
+                        "items": [],
+                        "total_quantity": 0,
+                        "total_cost": 0
+                    }
+                
+                # Safely get database match info
+                database_match = material.get("database_match")
+                has_database_match = database_match and isinstance(database_match, dict)
+                
+                # Create detailed lumber specification with safe access
+                lumber_spec = {
+                    "item_name": extracted_item.get("item_name", "Unknown Item"),
+                    "sku": database_match.get("sku", "Quotation not available") if has_database_match else "Quotation not available",
+                    "category": category,
+                    "specifications": {
+                        "dimensions": extracted_item.get("dimensions", ""),
+                        "material": database_match.get("material", "Unknown") if has_database_match else "Unknown",
+                        "grade": database_match.get("grade", "Unknown") if has_database_match else "Unknown",
+                        "length": extracted_item.get("dimensions", "").split("X")[-1] if "X" in extracted_item.get("dimensions", "") else "",
+                        "width": extracted_item.get("dimensions", "").split("X")[0] if "X" in extracted_item.get("dimensions", "") else "",
+                        "thickness": extracted_item.get("dimensions", "").split("X")[1] if len(extracted_item.get("dimensions", "").split("X")) > 2 else ""
+                    },
+                    "quantity": {
+                        "needed": material.get("quantity_needed", 0),
+                        "unit": extracted_item.get("unit", "each"),
+                        "location": extracted_item.get("location", "")
+                    },
+                    "pricing": {
+                        "unit_price": database_match.get("unit_price", "Quotation not available") if has_database_match else "Quotation not available",
+                        "total_price": material.get("total_cost", "Quotation not available") if isinstance(material.get("total_cost"), (int, float)) else "Quotation not available",
+                        "price_per_unit": f"${database_match.get('unit_price', 0):.2f}" if has_database_match and isinstance(database_match.get("unit_price"), (int, float)) else "Quotation not available"
+                    },
+                    "sourcing": {
+                        "available_contractors": material.get("available_contractors", []),
+                        "recommended_contractor": material.get("recommended_contractor", "Contact for quote"),
+                        "database_match": "Available" if has_database_match else "Quotation not available"
+                    }
+                }
+                
+                # Add database details if available
+                if has_database_match:
+                    lumber_spec["database_info"] = {
+                        "item_id": database_match.get("item_id", "Unknown"),
+                        "description": database_match.get("description", "Unknown"),
+                        "subcategory": database_match.get("subcategory", "Unknown")
+                    }
+                    lumber_spec["pricing"]["unit_price"] = database_match.get("unit_price", 0)
+                    lumber_spec["pricing"]["total_price"] = material.get("total_cost", 0)
+                    
+                    # Add to total cost
+                    if isinstance(material.get("total_cost"), (int, float)):
+                        lumber_estimates["total_lumber_cost"] += material["total_cost"]
+                        lumber_estimates["lumber_by_category"][category]["total_cost"] += material["total_cost"]
+                
+                # Add to category summary
+                lumber_estimates["lumber_by_category"][category]["items"].append({
+                    "item_name": extracted_item.get("item_name", "Unknown Item"),
+                    "sku": database_match.get("sku", "Quotation not available") if has_database_match else "Quotation not available",
+                    "quantity": material.get("quantity_needed", 0),
+                    "unit_price": lumber_spec["pricing"]["unit_price"],
+                    "total_cost": lumber_spec["pricing"]["total_price"]
+                })
+                lumber_estimates["lumber_by_category"][category]["total_quantity"] += material.get("quantity_needed", 0)
+                
+                # Add to detailed specs
+                lumber_estimates["detailed_lumber_specs"].append(lumber_spec)
+                
+            except Exception as e:
+                print(f"⚠️ Error processing material in lumber estimates: {e}")
+                print(f"   Material data: {material}")
+                # Continue with next material instead of crashing
+                continue
         
         return lumber_estimates
 
