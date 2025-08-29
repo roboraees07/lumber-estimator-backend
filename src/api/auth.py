@@ -151,23 +151,24 @@ async def register_user(user_data: UserRegistration):
 @router.post("/login", response_model=LoginResponse)
 async def login_user(login_data: UserLogin):
     """Authenticate user and return JWT token"""
-    # Authenticate user
+    # This function now correctly returns user data if the password is valid
     user = auth_manager.authenticate_user(login_data.username, login_data.password)
     
+    # Case 1: User is None (means username not found or password was wrong)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username/email or password"
         )
     
-    # Check if account is approved
+    # Case 2: User exists and password is correct, but account is not approved
     if user['account_status'] != 'approved':
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Account is {user['account_status']}. Please wait for admin approval."
         )
     
-    # Generate JWT token
+    # Case 3: Success! User exists, password is correct, and account is approved
     access_token = auth_manager.generate_jwt_token(user)
     
     return LoginResponse(
@@ -227,12 +228,17 @@ async def approve_user_account(
     
     return {"message": message}
 
+# Previouis onely planned but not implemented endpoint
+# @router.get("/users", response_model=List[Dict[str, Any]])
+# async def get_all_users(admin_user: Dict[str, Any] = Depends(get_admin_user)):
+#     """Get all users (Admin only)"""
+#     # This would need to be implemented in the auth manager
+#     # For now, return a placeholder
+#     return {"message": "User list endpoint - to be implemented"}
 @router.get("/users", response_model=List[Dict[str, Any]])
 async def get_all_users(admin_user: Dict[str, Any] = Depends(get_admin_user)):
     """Get all users (Admin only)"""
-    # This would need to be implemented in the auth manager
-    # For now, return a placeholder
-    return {"message": "User list endpoint - to be implemented"}
+    return auth_manager.get_all_users()
 
 @router.post("/logout", response_model=Dict[str, Any])
 async def logout_user(current_user: Dict[str, Any] = Depends(get_current_user)):

@@ -168,6 +168,49 @@ class UserAuthManager:
             conn.commit()
             return user_id
     
+    # Previously implemented but commented out for testing out new logic
+    # def authenticate_user(self, username: str, password: str) -> Optional[Dict]:
+    #     """Authenticate user and return user data"""
+    #     with self.auth_db.get_connection() as conn:
+    #         cursor = conn.cursor()
+            
+    #         cursor.execute('''
+    #             SELECT id, username, email, password_hash, role, account_status,
+    #                    first_name, last_name, company_name, profile_completed
+    #             FROM users WHERE username = ? OR email = ?
+    #         ''', (username, username))
+            
+    #         row = cursor.fetchone()
+    #         if not row:
+    #             return None
+            
+    #         user_id, username, email, password_hash, role, account_status, first_name, last_name, company_name, profile_completed = row
+            
+    #         # Check if account is approved
+    #         if account_status != 'approved':
+    #             return None
+            
+    #         # Verify password
+    #         if not self.verify_password(password, password_hash):
+    #             return None
+            
+    #         # Update last login
+    #         cursor.execute('''
+    #             UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?
+    #         ''', (user_id,))
+    #         conn.commit()
+            
+    #         return {
+    #             'id': user_id,
+    #             'username': username,
+    #             'email': email,
+    #             'role': role,
+    #             'account_status': account_status,
+    #             'first_name': first_name,
+    #             'last_name': last_name,
+    #             'company_name': company_name,
+    #             'profile_completed': profile_completed
+    #         }
     def authenticate_user(self, username: str, password: str) -> Optional[Dict]:
         """Authenticate user and return user data"""
         with self.auth_db.get_connection() as conn:
@@ -175,41 +218,30 @@ class UserAuthManager:
             
             cursor.execute('''
                 SELECT id, username, email, password_hash, role, account_status,
-                       first_name, last_name, company_name, profile_completed
+                    first_name, last_name, company_name, profile_completed
                 FROM users WHERE username = ? OR email = ?
             ''', (username, username))
             
             row = cursor.fetchone()
             if not row:
-                return None
+                return None # User does not exist
             
-            user_id, username, email, password_hash, role, account_status, first_name, last_name, company_name, profile_completed = row
+            # Unpack all data from the row
+            columns = [desc[0] for desc in cursor.description]
+            user = dict(zip(columns, row))
             
-            # Check if account is approved
-            if account_status != 'approved':
-                return None
+            # Verify password first
+            if not self.verify_password(password, user['password_hash']):
+                return None # Incorrect password
             
-            # Verify password
-            if not self.verify_password(password, password_hash):
-                return None
-            
-            # Update last login
+            # Password is correct, now update last login
             cursor.execute('''
                 UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?
-            ''', (user_id,))
+            ''', (user['id'],))
             conn.commit()
             
-            return {
-                'id': user_id,
-                'username': username,
-                'email': email,
-                'role': role,
-                'account_status': account_status,
-                'first_name': first_name,
-                'last_name': last_name,
-                'company_name': company_name,
-                'profile_completed': profile_completed
-            }
+            # Return the user data, including their status
+            return user
     
     def generate_jwt_token(self, user_data: Dict) -> str:
         """Generate JWT token for user"""
@@ -326,3 +358,18 @@ class UserAuthManager:
             
             conn.commit()
             return cursor.rowcount > 0
+
+    def get_all_users(self) -> List[Dict]:
+        """Get a list of all users"""
+        with self.auth_db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id, username, email, role, account_status, first_name, last_name,
+                    company_name, profile_completed, created_at, last_login
+                FROM users
+                ORDER BY created_at DESC
+            ''')
+
+            rows = cursor.fetchall()
+            columns = [desc[0] for desc in cursor.description]
+            return [dict(zip(columns, row)) for row in rows]

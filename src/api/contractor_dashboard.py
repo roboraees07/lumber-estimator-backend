@@ -561,8 +561,12 @@ async def advanced_search(
                 'SELECT COUNT(*)'
             ).split(' ORDER BY')[0]  # Remove ORDER BY and LIMIT for count
             
+            # Previoudly used logic, commented out for backup
+            # cursor.execute(count_sql, params[:-2])  # Remove limit and offset params
+            # total_count = cursor.fetchone()[0]
             cursor.execute(count_sql, params[:-2])  # Remove limit and offset params
-            total_count = cursor.fetchone()[0]
+            count_result = cursor.fetchone()
+            total_count = count_result[0] if count_result else 0
             
             return {
                 "results": results,

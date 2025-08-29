@@ -206,7 +206,7 @@ class AccuracyCalculator:
         matched_count = sum(1 for m in materials 
                           if m.get("database_match") and m.get("database_match") != "Quotation needed")
         if materials:
-            match_rate = matched_count / len(materials)
+            match_rate = (matched_count / len(materials)) if materials else 0
             boost += min(0.10, match_rate * 0.10)
         
         return min(0.40, boost)  # Maximum 40% boost
@@ -423,6 +423,27 @@ class AccuracyCalculator:
         else:
             return "database coverage"
     
+    # Previous commented out because of 500 error
+    # def get_accuracy_summary(self) -> Dict[str, Any]:
+    #     """Get summary of all accuracy metrics"""
+    #     if not self.accuracy_history:
+    #         return {"message": "No accuracy data available"}
+        
+    #     recent_metrics = self.accuracy_history[-10:]  # Last 10 estimates
+        
+    #     avg_accuracy = sum(m.overall_accuracy for m in recent_metrics) / len(recent_metrics)
+    #     avg_confidence = sum(m.confidence_level.value for m in recent_metrics) / len(recent_metrics)
+        
+    #     return {
+    #         "total_estimates": len(self.accuracy_history),
+    #         "recent_estimates": len(recent_metrics),
+    #         "average_accuracy": round(avg_accuracy * 100, 2),
+    #         "average_confidence": avg_confidence,
+    #         "accuracy_trend": self._calculate_accuracy_trend(),
+    #         "best_accuracy": max(m.overall_accuracy for m in self.accuracy_history),
+    #         "worst_accuracy": min(m.overall_accuracy for m in self.accuracy_history),
+    #         "recent_accuracy": [round(m.overall_accuracy * 100, 2) for m in recent_metrics]
+    #     }
     def get_accuracy_summary(self) -> Dict[str, Any]:
         """Get summary of all accuracy metrics"""
         if not self.accuracy_history:
@@ -431,16 +452,27 @@ class AccuracyCalculator:
         recent_metrics = self.accuracy_history[-10:]  # Last 10 estimates
         
         avg_accuracy = sum(m.overall_accuracy for m in recent_metrics) / len(recent_metrics)
-        avg_confidence = sum(m.confidence_level.value for m in recent_metrics) / len(recent_metrics)
         
+        # Correctly calculate the distribution of confidence levels
+        accuracy_distribution = {
+            "very_high": 0,
+            "high": 0,
+            "medium": 0,
+            "low": 0,
+            "very_low": 0
+        }
+        for m in recent_metrics:
+            if m.confidence_level.value in accuracy_distribution:
+                accuracy_distribution[m.confidence_level.value] += 1
+                
         return {
             "total_estimates": len(self.accuracy_history),
             "recent_estimates": len(recent_metrics),
             "average_accuracy": round(avg_accuracy * 100, 2),
-            "average_confidence": avg_confidence,
+            "accuracy_distribution": accuracy_distribution,
             "accuracy_trend": self._calculate_accuracy_trend(),
-            "best_accuracy": max(m.overall_accuracy for m in self.accuracy_history),
-            "worst_accuracy": min(m.overall_accuracy for m in self.accuracy_history),
+            "best_accuracy": round(max(m.overall_accuracy for m in self.accuracy_history) * 100, 2),
+            "worst_accuracy": round(min(m.overall_accuracy for m in self.accuracy_history) * 100, 2),
             "recent_accuracy": [round(m.overall_accuracy * 100, 2) for m in recent_metrics]
         }
     

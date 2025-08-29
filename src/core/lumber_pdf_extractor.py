@@ -267,14 +267,25 @@ class LumberPDFExtractor:
                         building_dimensions = page_result["building_dimensions"]
                         print(f"✅ Found building dimensions: {building_dimensions}")
                     
-                    # Extract lumber materials
-                    if "lumber_materials" in page_result:
-                        all_materials.extend(page_result["lumber_materials"])
-                        print(f"✅ Page {page_num + 1}: Found {len(page_result['lumber_materials'])} lumber materials")
+                    # # Extract lumber materials
+                    # if "lumber_materials" in page_result:
+                    #     all_materials.extend(page_result["lumber_materials"])
+                    #     print(f"✅ Page {page_num + 1}: Found {len(page_result['lumber_materials'])} lumber materials")
                     
-                    # Extract other materials
-                    if "other_materials" in page_result:
-                        all_materials.extend(page_result["other_materials"])
+                    # # Extract other materials
+                    # if "other_materials" in page_result:
+                    #     all_materials.extend(page_result["other_materials"])
+                    #     print(f"✅ Page {page_num + 1}: Found {len(page_result['other_materials'])} other materials")
+                    # Safely extract lumber materials
+                    lumber_items = page_result.get("lumber_materials")
+                    if isinstance(lumber_items, list):
+                        all_materials.extend(lumber_items)
+                        print(f"✅ Page {page_num + 1}: Found {len(page_result['lumber_materials'])} lumber materials")
+
+                    # Safely extract other materials
+                    other_items = page_result.get("other_materials")
+                    if isinstance(other_items, list):
+                        all_materials.extend(other_items)
                         print(f"✅ Page {page_num + 1}: Found {len(page_result['other_materials'])} other materials")
                         
                 else:
@@ -310,6 +321,8 @@ class LumberPDFExtractor:
         
         for material in materials:
             item_name = material.get("item_name", "").lower()
+            if not item_name:
+                continue
             category = material.get("category", "")
             quantity = material.get("quantity", 1)
             unit = material.get("unit", "each")
@@ -791,7 +804,8 @@ class LumberPDFExtractor:
         
         # Cache the result for future use
         self._save_to_cache(pdf_hash, estimates)
-        
+        print("--- DEBUG: FRESH RESULT FROM EXTRACTOR ---")
+        print(json.dumps(estimates, indent=2))
         return estimates
 
 # Global instance - will be created when first accessed
