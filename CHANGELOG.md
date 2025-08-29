@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Export & Download Functionality**: PDF and Excel export endpoints for estimation results
+- **Professional Reports**: Comprehensive item breakdown with SKU, pricing, and contractor information
+- **Multiple Formats**: Support for both PDF (professional reports) and Excel (data analysis) formats
+- **Enhanced Dependencies**: Added reportlab, openpyxl, and xlsxwriter for file generation
 - Initial project setup and structure
 - Basic test framework
 

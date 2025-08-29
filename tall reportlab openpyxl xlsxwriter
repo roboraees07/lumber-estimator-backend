@@ -1,0 +1,5 @@
+[33m51248a1[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m Fix 500 Internal Server Error in PDF estimation endpoints - Added proper error handling around accuracy calculation - Fixed null pointer access in lumber PDF extractor - Enhanced error handling in _generate_lumber_estimates method - Added safe access patterns for database_match fields - Improved error handling in _generate_simple_detailed_items method - Resolved port conflict issues and application startup problems
+[33m1ee56be[m Resolve Some key issues
+[33md8e663a[m Merge branch 'main' of https://github.com/roboraees07/lumber-estimator-backend
+[33me6370cf[m Update requirements.txt
+[33m1bfe169[m Update the version

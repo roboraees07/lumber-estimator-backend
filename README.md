@@ -15,6 +15,7 @@ A sophisticated AI-powered lumber estimation system that analyzes construction P
 - **Material Database Integration**: Comprehensive lumber and construction material catalog
 - **Contractor Management System**: Detailed profiles with capabilities, specialties, and ratings
 - **Dashboard Analytics**: System overview with user counts, project statistics, and monitoring
+- **Professional Export**: PDF and Excel reports with comprehensive item details and contractor information
 
 ## 🚀 Quick Start
 
@@ -71,6 +72,10 @@ python app.py
 - `POST /accuracy/validate/{project_id}` - Validate estimation accuracy
 - `POST /accuracy/validate/pdf` - Validate PDF estimation accuracy
 - `GET /accuracy/report` - Generate accuracy reports
+
+### Export & Download Endpoints
+- `POST /lumber/export/pdf` - Download estimation results as PDF report
+- `POST /lumber/export/excel` - Download estimation results as Excel spreadsheet
 
 ### Contractor Management
 - `POST /contractors/profiles/` - Create contractor profile
