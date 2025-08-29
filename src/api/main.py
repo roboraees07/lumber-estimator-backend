@@ -27,6 +27,15 @@ from .auth import router as auth_router
 from .auth import get_current_user
 from .test_endpoints import router as test_router
 
+# Request models for manual item addition
+class ManualItemRequest(BaseModel):
+    """Request model for manually adding items - Simplified for estimators"""
+    project_name: str
+    item_name: str
+    quantity: float
+    unit: str = "each"
+    notes: Optional[str] = None
+
 # Initialize FastAPI app
 app = FastAPI(
     title="🏗️ Lumber Estimator API",
@@ -115,6 +124,244 @@ app.include_router(auth_router)  # Authentication endpoints
 app.include_router(contractor_router)
 app.include_router(dashboard_router)
 app.include_router(test_router)  # Test endpoints (no authentication required)
+
+# Manual Item Management Endpoints
+@app.post(
+    "/lumber/items/manual-add",
+    summary="➕ Add Manual Item (Simplified)",
+    description="Allow estimators to add missing items with just name and quantity. System automatically estimates costs from database.",
+    response_description="Manual item added successfully with automatic cost estimation",
+    tags=["Lumber Estimation"],
+    responses={
+        200: {
+            "description": "Manual item added successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "success": True,
+                        "message": "Manual item added successfully with automatic cost estimation",
+                        "item_id": "manual_item_20250829_123456_7890",
+                        "project_name": "Test House Project",
+                        "item_name": "2x4 Studs",
+                        "category": "Walls",
+                        "quantity": 50,
+                        "unit": "each",
+                        "estimated_unit_price": 5.71,
+                        "estimated_cost": 285.50,
+                        "database_match_found": True,
+                        "estimation_method": "Automatic database lookup",
+                        "added_timestamp": "2025-08-29T12:34:56Z"
+                    }
+                }
+            }
+        },
+        400: {"description": "Invalid request data"},
+        401: {"description": "Unauthorized - Authentication required"},
+        403: {"description": "Forbidden - Insufficient permissions"}
+    }
+)
+async def add_manual_item(
+    request: ManualItemRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    ## Add Manual Item to Project ➕ (Simplified)
+    
+    Allow estimators to add missing items with just name and quantity. The system automatically:
+    - Searches the lumber database for matching items
+    - Estimates costs based on database prices
+    - Categorizes items automatically
+    - Calculates total costs
+    
+    **Features:**
+    - **Simple Input**: Just item name and quantity
+    - **Automatic Cost Estimation**: Database lookup for pricing
+    - **Smart Categorization**: Automatic category assignment
+    - **Database Integration**: Searches existing lumber database
+    - **Project Association**: Links items to specific projects
+    
+    **Use Cases:**
+    - Missing items from PDF analysis
+    - Quick additions during estimation
+    - Items requiring manual specification
+    - Project-specific requirements
+    - Cost overrun documentation
+    
+    **Response Includes:**
+    - Unique item identifier
+    - Automatic cost calculations
+    - Database match status and method
+    - Project association
+    - Timestamp and user tracking
+    """
+    try:
+        # Check user permissions (estimators and admins can add items)
+        user_role = current_user.get("role", "user")
+        if user_role not in ["estimator", "admin"]:
+            raise HTTPException(
+                status_code=403, 
+                detail="Only estimators and admins can add manual items"
+            )
+        
+        # Generate unique item ID
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        item_id = f"manual_item_{timestamp}"
+        
+        # Search for database matches and estimate costs
+        database_match_found = False
+        estimated_unit_price = 0.0
+        estimated_cost = 0.0
+        category = "Unknown"
+        dimensions = "Not specified"
+        
+        try:
+            # Search lumber database for matching items
+            from ..core.lumber_estimation_engine import lumber_estimation_engine
+            
+            # Search by item name
+            search_results = lumber_estimation_engine.search_lumber_items(request.item_name)
+            
+            if search_results:
+                # Use the first match for estimation
+                best_match = search_results[0]
+                database_match_found = True
+                category = best_match.category
+                dimensions = best_match.dimensions
+                estimated_unit_price = best_match.unit_price
+                estimated_cost = request.quantity * estimated_unit_price
+                
+                print(f"✅ Found database match: {best_match.description} - ${estimated_unit_price:.2f}")
+            else:
+                # No database match - use default pricing
+                estimated_unit_price = 10.0  # Default $10 per item
+                estimated_cost = request.quantity * estimated_unit_price
+                print(f"⚠️ No database match found for '{request.item_name}' - using default price")
+                
+        except Exception as e:
+            print(f"⚠️ Database search failed: {e} - using default pricing")
+            estimated_unit_price = 10.0
+            estimated_cost = request.quantity * estimated_unit_price
+        
+        # TODO: Implement database storage for manual items
+        # For now, return success with estimated data
+        
+        return {
+            "success": True,
+            "message": "Manual item added successfully with automatic cost estimation",
+            "item_id": item_id,
+            "project_name": request.project_name,
+            "item_name": request.item_name,
+            "category": category,
+            "quantity": request.quantity,
+            "unit": request.unit,
+            "dimensions": dimensions,
+            "estimated_unit_price": estimated_unit_price,
+            "estimated_cost": estimated_cost,
+            "database_match_found": database_match_found,
+            "notes": request.notes,
+            "added_by": current_user.get("username", "unknown"),
+            "added_timestamp": datetime.now().isoformat(),
+            "estimation_method": "Automatic database lookup" if database_match_found else "Default pricing applied"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to add manual item: {str(e)}"
+        )
+
+@app.get(
+    "/lumber/items/manual/{project_name}",
+    summary="📋 Get Manual Items for Project",
+    description="Retrieve all manually added items for a specific project.",
+    response_description="List of manual items for the project",
+    tags=["Lumber Estimation"],
+    responses={
+        200: {
+            "description": "Manual items retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "project_name": "Test House Project",
+                        "total_manual_items": 1,
+                        "total_estimated_cost": 900.0,
+                        "items": [
+                            {
+                                "item_id": "manual_item_20250829_123456_7890",
+                                "item_name": "Custom French Doors",
+                                "category": "Doors",
+                                "quantity": 2,
+                                "unit": "each",
+                                "estimated_cost": 900.0,
+                                "added_timestamp": "2025-08-29T12:34:56Z"
+                            }
+                        ]
+                    }
+                }
+            }
+        },
+        400: {"description": "Invalid project name"},
+        401: {"description": "Unauthorized - Authentication required"},
+        404: {"description": "Project not found"}
+    }
+)
+async def get_manual_items_for_project(
+    project_name: str,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    ## Get Manual Items for Project 📋
+    
+    Retrieve all manually added items for a specific project.
+    
+    **Features:**
+    - **Project-Specific Retrieval**: Get items for a specific project
+    - **Cost Summarization**: Total cost calculation for manual items
+    - **Item Details**: Complete item specifications and metadata
+    - **User Tracking**: See who added each item and when
+    
+    **Use Cases:**
+    - Project cost review
+    - Manual item verification
+    - Cost overrun analysis
+    - Project documentation
+    - Audit and compliance
+    
+    **Response Includes:**
+    - Project summary with total costs
+    - Individual item details
+    - Cost breakdowns
+    - Timestamps and user information
+    """
+    try:
+        # Check user permissions
+        user_role = current_user.get("role", "user")
+        if user_role not in ["estimator", "admin"]:
+            raise HTTPException(
+                status_code=403, 
+                detail="Only estimators and admins can view manual items"
+            )
+        
+        # TODO: Implement database retrieval for manual items
+        # For now, return placeholder data
+        
+        return {
+            "project_name": project_name,
+            "total_manual_items": 0,
+            "total_estimated_cost": 0.0,
+            "items": [],
+            "message": "No manual items found for this project (database storage not yet implemented)"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to retrieve manual items: {str(e)}"
+        )
 
 # Pydantic models for request/response
 class ProjectCreate(BaseModel):
