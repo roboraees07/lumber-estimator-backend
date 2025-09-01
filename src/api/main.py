@@ -1180,6 +1180,7 @@ async def get_projects():
                         "project_name": "LAMONS 3200LS BL ELEV",
                         "total_cost": 16423.45,
                         "total_items_count": 15,
+                        "items_needing_quotation": 2,
                         "building_dimensions": {
                             "length_feet": 28.7,
                             "width_feet": 11,
@@ -1190,7 +1191,9 @@ async def get_projects():
                         "items": [
                             {
                                 "item_name": "2X4 STUD",
+                                "sku": "SKU-030",
                                 "source": "pdf_analysis",
+                                "status": "available",
                                 "contractor_name": "Quality Hardware & Lumber",
                                 "category": "Walls",
                                 "quantity_needed": 50,
@@ -1200,7 +1203,9 @@ async def get_projects():
                             },
                             {
                                 "item_name": "Custom French Doors",
+                                "sku": "No SKU",
                                 "source": "manual_add",
+                                "status": "manual_added",
                                 "contractor_name": "No contractor assigned",
                                 "quantity": 2,
                                 "unit": "each",
@@ -1231,8 +1236,10 @@ async def get_project(project_id: int):
     - **Building Dimensions**: From PDF analysis
     - **All Items**: Combined list of PDF-detected and manual items
     - **Unified Totals**: Combined cost and item count
+    - **Items Needing Quotation**: Count of items requiring price quotes
+    - **Item Details**: Each item includes SKU, status, source, and contractor info
     - **Item Source**: Each item shows if it's from 'pdf_analysis' or 'manual_add'
-    - **Contractor Info**: Each item includes contractor name
+    - **Item Status**: Available, quotation_needed, manual_added, or unknown
     
     **Use Cases:**
     - Complete project review and analysis
@@ -1254,20 +1261,60 @@ async def get_project(project_id: int):
         # Combine all items into one list
         all_items = []
         
-        # Add PDF items with source indicator
+        # Add PDF items with source indicator and missing fields
         for item in pdf_items:
             item_copy = item.copy()
             item_copy['source'] = 'pdf_analysis'
             item_copy['contractor_name'] = item.get('recommended_contractor', 'No contractor assigned')
+            
+            # Add SKU if not present (use actual sku field, not item_id)
+            if 'sku' not in item_copy:
+                # Check if there's a sku field in the item data
+                actual_sku = item.get('sku')
+                if actual_sku:
+                    item_copy['sku'] = actual_sku
+                else:
+                    # Check if there's a sku in the detailed_lumber_specs structure
+                    # This is where the actual SKU values like "SKU-030" are stored
+                    lumber_specs = project.get('analysis_data', {}).get('lumber_estimates', {}).get('detailed_lumber_specs', [])
+                    for spec in lumber_specs:
+                        if spec.get('item_name') == item.get('item_name'):
+                            if spec.get('sku'):
+                                item_copy['sku'] = spec.get('sku')
+                                break
+                    
+                    # If still no SKU found, fallback to item_id
+                    if 'sku' not in item_copy:
+                        item_copy['sku'] = item.get('item_id', 'No SKU')
+            
+            # Add status based on database_match
+            if 'status' not in item_copy:
+                db_match = item.get('database_match', 'Unknown')
+                if db_match == 'Available':
+                    item_copy['status'] = 'available'
+                elif db_match == 'Quotation needed':
+                    item_copy['status'] = 'quotation_needed'
+                else:
+                    item_copy['status'] = 'unknown'
+            
             all_items.append(item_copy)
         
-        # Add manual items with source indicator
+        # Add manual items with source indicator and missing fields
         for item in manual_items:
             item_copy = item.copy()
             item_copy['source'] = 'manual_add'
             # Ensure contractor_name is present
             if not item_copy.get('contractor_name'):
                 item_copy['contractor_name'] = 'No contractor assigned'
+            
+            # Add status for manual items
+            if 'status' not in item_copy:
+                item_copy['status'] = 'manual_added'
+            
+            # Ensure SKU is present
+            if 'sku' not in item_copy:
+                item_copy['sku'] = 'No SKU'
+            
             all_items.append(item_copy)
         
         # Structure the response with combined items
@@ -1284,6 +1331,9 @@ async def get_project(project_id: int):
             # Combined totals (no separate PDF/manual costs)
             "total_cost": project.get('combined_total_cost', 0.0),
             "total_items_count": project.get('total_items_count', 0),
+            
+            # Items needing quotation
+            "items_needing_quotation": len([item for item in all_items if item.get('status') == 'quotation_needed']),
             
             # Building dimensions from PDF analysis
             "building_dimensions": project.get('analysis_data', {}).get('building_dimensions', {}),
