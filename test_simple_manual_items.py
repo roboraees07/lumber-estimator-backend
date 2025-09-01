@@ -38,10 +38,11 @@ def test_simple_manual_item(token):
     
     # Test data - SIMPLIFIED: Just name and quantity
     test_item = {
-        "project_name": "Simple House Project",
+        "project_id": 1,
         "item_name": "2x4 Studs",  # Just item name
         "quantity": 50,            # Just quantity
         "unit": "each",            # Optional, defaults to "each"
+        "sku": "STUDS-2X4-8FT",   # Optional SKU
         "notes": "Added during estimation review"  # Optional
     }
     
@@ -49,7 +50,7 @@ def test_simple_manual_item(token):
         print("🔍 Testing simplified manual item addition...")
         print(f"   Item: {test_item['item_name']}")
         print(f"   Quantity: {test_item['quantity']} {test_item['unit']}")
-        print(f"   Project: {test_item['project_name']}")
+        print(f"   Project ID: {test_item['project_id']}")
         
         response = requests.post(
             f"{BASE_URL}/lumber/items/manual-add",
@@ -63,11 +64,14 @@ def test_simple_manual_item(token):
             data = response.json()
             print("✅ Manual item added successfully!")
             print(f"   Item ID: {data.get('item_id')}")
-            print(f"   Project: {data.get('project_name')}")
+            print(f"   Project ID: {data.get('project_id')}")
+            print(f"   Project Name: {data.get('project_name')}")
             print(f"   Item: {data.get('item_name')}")
+            print(f"   SKU: {data.get('sku', 'N/A')}")
             print(f"   Category: {data.get('category')}")
             print(f"   Unit Price: ${data.get('estimated_unit_price', 'N/A')}")
             print(f"   Total Cost: ${data.get('estimated_cost', 'N/A')}")
+            print(f"   Contractor: {data.get('contractor_name', 'N/A')}")
             print(f"   Database Match: {data.get('database_match_found', False)}")
             print(f"   Estimation Method: {data.get('estimation_method', 'Unknown')}")
             return True
@@ -87,20 +91,20 @@ def test_multiple_simple_items(token):
     # Test different item types
     test_items = [
         {
-            "project_name": "Simple House Project",
+            "project_id": 1,
             "item_name": "OSB Sheathing",
             "quantity": 20,
             "notes": "Wall sheathing"
         },
         {
-            "project_name": "Simple House Project", 
+            "project_id": 1, 
             "item_name": "Roof Shingles",
             "quantity": 30,
             "unit": "sqft",
             "notes": "Roof covering"
         },
         {
-            "project_name": "Simple House Project",
+            "project_id": 1,
             "item_name": "Concrete Mix",
             "quantity": 10,
             "unit": "bags",
@@ -133,8 +137,8 @@ def main():
     """Main test function"""
     print("🧪 Testing Simplified Manual Item Addition")
     print("=" * 60)
-    print("📋 Requirements: Just Item Name + Quantity")
-    print("🤖 Features: Automatic cost estimation + Database lookup")
+    print("📋 Requirements: Project ID + Item Name + Quantity + Optional SKU")
+    print("🤖 Features: Automatic cost estimation + Database lookup + Contractor info")
     print("=" * 60)
     
     # Step 1: Get authentication token
@@ -160,10 +164,12 @@ def main():
     
     if success1:
         print("\n🎉 Simplified manual item addition is working!")
-        print("   Estimators can now add items with just:")
+        print("   Estimators can now add items with:")
+        print("   - Project ID")
         print("   - Item Name")
         print("   - Quantity")
-        print("   - System automatically estimates costs! 🚀")
+        print("   - Optional SKU")
+        print("   - System automatically estimates costs and includes contractor info! 🚀")
     else:
         print("\n⚠️ Some tests failed. Check the error messages above.")
 

@@ -25,7 +25,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 from io import BytesIO
 
-from ..database.enhanced_models import EnhancedDatabaseManager, ContractorProfileManager, MaterialItemManager, ProjectManager
+from ..database.enhanced_models import EnhancedDatabaseManager, ContractorProfileManager, MaterialItemManager, ProjectManager, ManualItemsManager, EstimateHistoryManager
 from ..core.contractor_input import ContractorDataImporter
 from ..core.estimation_engine import EstimationEngine
 from ..core.lumber_estimation_engine import lumber_estimation_engine
@@ -39,10 +39,11 @@ from .test_endpoints import router as test_router
 # Request models for manual item addition
 class ManualItemRequest(BaseModel):
     """Request model for manually adding items - Simplified for estimators"""
-    project_name: str
+    project_id: int
     item_name: str
     quantity: float
     unit: str = "each"
+    sku: Optional[str] = None
     notes: Optional[str] = None
 
 # Initialize FastAPI app
@@ -124,6 +125,8 @@ enhanced_db_manager = EnhancedDatabaseManager()
 contractor_profile_manager = ContractorProfileManager(enhanced_db_manager)
 material_item_manager = MaterialItemManager(enhanced_db_manager)
 project_manager = ProjectManager(enhanced_db_manager)
+manual_items_manager = ManualItemsManager(enhanced_db_manager)
+estimate_history_manager = EstimateHistoryManager(enhanced_db_manager)
 contractor_importer = ContractorDataImporter(enhanced_db_manager)
 estimation_engine = EstimationEngine(enhanced_db_manager)
 accuracy_calculator = get_accuracy_calculator()
@@ -138,7 +141,7 @@ app.include_router(test_router)  # Test endpoints (no authentication required)
 @app.post(
     "/lumber/items/manual-add",
     summary="➕ Add Manual Item (Simplified)",
-    description="Allow estimators to add missing items with just name and quantity. System automatically estimates costs from database.",
+    description="Allow estimators to add missing items with project ID, name, quantity, and optional SKU. System automatically estimates costs from database.",
     response_description="Manual item added successfully with automatic cost estimation",
     tags=["Lumber Estimation"],
     responses={
@@ -150,23 +153,62 @@ app.include_router(test_router)  # Test endpoints (no authentication required)
                         "success": True,
                         "message": "Manual item added successfully with automatic cost estimation",
                         "item_id": "manual_item_20250829_123456_7890",
+                        "project_id": 123,
                         "project_name": "Test House Project",
                         "item_name": "2x4 Studs",
                         "category": "Walls",
                         "quantity": 50,
                         "unit": "each",
+                        "sku": "STUDS-2X4-8FT",
                         "estimated_unit_price": 5.71,
                         "estimated_cost": 285.50,
                         "database_match_found": True,
+                        "contractor_name": "ABC Construction Co.",
                         "estimation_method": "Automatic database lookup",
                         "added_timestamp": "2025-08-29T12:34:56Z"
                     }
                 }
             }
         },
-        400: {"description": "Invalid request data"},
+        400: {
+            "description": "Bad Request - Invalid input data",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "invalid_project_id": {
+                            "summary": "Invalid Project ID",
+                            "value": {
+                                "detail": "Project ID must be a positive integer. Received: 0"
+                            }
+                        },
+                        "empty_item_name": {
+                            "summary": "Empty Item Name",
+                            "value": {
+                                "detail": "Item name cannot be empty or contain only whitespace"
+                            }
+                        },
+                        "invalid_quantity": {
+                            "summary": "Invalid Quantity",
+                            "value": {
+                                "detail": "Quantity must be a positive number. Received: -5"
+                            }
+                        }
+                    }
+                }
+            }
+        },
         401: {"description": "Unauthorized - Authentication required"},
-        403: {"description": "Forbidden - Insufficient permissions"}
+        403: {"description": "Forbidden - Insufficient permissions"},
+        404: {
+            "description": "Project Not Found",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "detail": "Project ID 999 not found. Please provide a valid project ID."
+                    }
+                }
+            }
+        }
     }
 )
 async def add_manual_item(
@@ -176,18 +218,20 @@ async def add_manual_item(
     """
     ## Add Manual Item to Project ➕ (Simplified)
     
-    Allow estimators to add missing items with just name and quantity. The system automatically:
+    Allow estimators to add missing items with project ID, name, and quantity. The system automatically:
     - Searches the lumber database for matching items
     - Estimates costs based on database prices
     - Categorizes items automatically
     - Calculates total costs
+    - Retrieves project and contractor information
     
     **Features:**
-    - **Simple Input**: Just item name and quantity
+    - **Simple Input**: Project ID, item name, and quantity (SKU optional)
     - **Automatic Cost Estimation**: Database lookup for pricing
     - **Smart Categorization**: Automatic category assignment
     - **Database Integration**: Searches existing lumber database
-    - **Project Association**: Links items to specific projects
+    - **Project Association**: Links items to specific projects by ID
+    - **Contractor Information**: Includes contractor name in response
     
     **Use Cases:**
     - Missing items from PDF analysis
@@ -196,14 +240,41 @@ async def add_manual_item(
     - Project-specific requirements
     - Cost overrun documentation
     
-    **Response Includes:**
-    - Unique item identifier
-    - Automatic cost calculations
-    - Database match status and method
-    - Project association
-    - Timestamp and user tracking
+         **Response Includes:**
+     - Unique item identifier
+     - Automatic cost calculations
+     - Database match status and method
+     - Project association
+     - Timestamp and user tracking
+     
+     **Error Handling:**
+     - **400 Bad Request**: Invalid project ID, empty item name, or invalid quantity
+     - **404 Not Found**: Project ID doesn't exist in database
+     - **403 Forbidden**: Insufficient user permissions
+     - **401 Unauthorized**: Authentication required
     """
     try:
+        # Validate project_id is a positive integer
+        if request.project_id <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Project ID must be a positive integer. Received: " + str(request.project_id)
+            )
+        
+        # Validate item_name is not empty
+        if not request.item_name or not request.item_name.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="Item name cannot be empty or contain only whitespace"
+            )
+        
+        # Validate quantity is positive
+        if request.quantity <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Quantity must be a positive number. Received: " + str(request.quantity)
+            )
+        
         # Check user permissions (estimators and admins can add items)
         user_role = current_user.get("role", "user")
         if user_role not in ["estimator", "admin"]:
@@ -251,26 +322,85 @@ async def add_manual_item(
             estimated_unit_price = 10.0
             estimated_cost = request.quantity * estimated_unit_price
         
-        # TODO: Implement database storage for manual items
-        # For now, return success with estimated data
+        # Get project information from database
+        project_info = None
+        contractor_name = "Not specified"
+        
+        # Validate project ID exists
+        try:
+            project_info = project_manager.get_project(request.project_id)
+            if not project_info:
+                raise HTTPException(
+                    status_code=404, 
+                    detail=f"Project ID {request.project_id} not found. Please provide a valid project ID."
+                )
+            
+            # Try to get contractor information if available
+            if 'contractor_id' in project_info and project_info['contractor_id']:
+                # You might need to implement a method to get contractor name by ID
+                # For now, we'll use a placeholder
+                contractor_name = f"Contractor ID: {project_info['contractor_id']}"
+            else:
+                contractor_name = "No contractor assigned"
+                
+        except HTTPException:
+            # Re-raise HTTP exceptions (like 404 for project not found)
+            raise
+        except Exception as e:
+            print(f"⚠️ Could not retrieve project info: {e}")
+            contractor_name = "Error retrieving contractor info"
+        
+        # ✅ SAVE TO DATABASE - Store manual item
+        try:
+            item_data = {
+                "item_name": request.item_name,
+                "quantity": request.quantity,
+                "unit": request.unit,
+                "sku": request.sku,
+                "notes": request.notes,
+                "category": category,
+                "dimensions": dimensions,
+                "estimated_unit_price": estimated_unit_price,
+                "estimated_cost": estimated_cost,
+                "database_match_found": database_match_found,
+                "contractor_name": contractor_name,
+                "added_by": current_user.get("username", "unknown")
+            }
+            
+            # Save to database
+            saved_item_id = manual_items_manager.add_manual_item(request.project_id, item_data)
+            
+            # Update project total cost
+            project_manager.update_project_total_cost(request.project_id)
+            
+            print(f"✅ Manual item saved to database with ID: {saved_item_id}")
+            
+        except Exception as db_error:
+            print(f"⚠️ Database save failed: {db_error}")
+            # Continue with response even if database save fails
+            saved_item_id = None
         
         return {
             "success": True,
-            "message": "Manual item added successfully with automatic cost estimation",
-            "item_id": item_id,
-            "project_name": request.project_name,
+            "message": "Manual item added successfully with automatic cost estimation and database storage",
+            "item_id": saved_item_id or item_id,
+            "project_id": request.project_id,
+            "project_name": project_info.get('name', 'Unknown Project') if project_info else 'Unknown Project',
             "item_name": request.item_name,
             "category": category,
             "quantity": request.quantity,
             "unit": request.unit,
+            "sku": request.sku,
             "dimensions": dimensions,
             "estimated_unit_price": estimated_unit_price,
             "estimated_cost": estimated_cost,
             "database_match_found": database_match_found,
+            "contractor_name": contractor_name,
             "notes": request.notes,
             "added_by": current_user.get("username", "unknown"),
             "added_timestamp": datetime.now().isoformat(),
-            "estimation_method": "Automatic database lookup" if database_match_found else "Default pricing applied"
+            "estimation_method": "Automatic database lookup" if database_match_found else "Default pricing applied",
+            "saved_to_database": saved_item_id is not None
         }
         
     except HTTPException:
@@ -353,16 +483,47 @@ async def get_manual_items_for_project(
                 detail="Only estimators and admins can view manual items"
             )
         
-        # TODO: Implement database retrieval for manual items
-        # For now, return placeholder data
-        
-        return {
-            "project_name": project_name,
-            "total_manual_items": 0,
-            "total_estimated_cost": 0.0,
-            "items": [],
-            "message": "No manual items found for this project (database storage not yet implemented)"
-        }
+        # ✅ GET FROM DATABASE - Retrieve manual items
+        try:
+            # Get project by name first to get project ID
+            projects = project_manager.get_all_projects()
+            project = None
+            for p in projects:
+                if p['name'] == project_name:
+                    project = p
+                    break
+            
+            if not project:
+                raise HTTPException(status_code=404, detail=f"Project '{project_name}' not found")
+            
+            project_id = project['id']
+            
+            # Get manual items from database
+            manual_items = manual_items_manager.get_manual_items_for_project(project_id)
+            summary = manual_items_manager.get_project_manual_items_summary(project_id)
+            
+            return {
+                "project_id": project_id,
+                "project_name": project_name,
+                "total_manual_items": summary['total_manual_items'],
+                "total_estimated_cost": summary['total_manual_cost'],
+                "matched_items": summary['matched_items'],
+                "unmatched_items": summary['unmatched_items'],
+                "items": manual_items,
+                "message": f"Found {summary['total_manual_items']} manual items for project '{project_name}'"
+            }
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            print(f"⚠️ Error retrieving manual items: {e}")
+            return {
+                "project_name": project_name,
+                "total_manual_items": 0,
+                "total_estimated_cost": 0.0,
+                "items": [],
+                "message": f"Error retrieving manual items: {str(e)}"
+            }
         
     except HTTPException:
         raise
@@ -1003,18 +1164,146 @@ async def get_projects():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/projects/{project_id}")
+@app.get(
+    "/projects/{project_id}",
+    summary="📋 Get Complete Project Details",
+    description="Get comprehensive project information with PDF analysis and manual items combined in one unified list. All costs are already calculated and combined.",
+    response_description="Complete project details with unified items list",
+    tags=["Projects"],
+    responses={
+        200: {
+            "description": "Complete project details retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "project_id": 3,
+                        "project_name": "LAMONS 3200LS BL ELEV",
+                        "total_cost": 16423.45,
+                        "total_items_count": 15,
+                        "building_dimensions": {
+                            "length_feet": 28.7,
+                            "width_feet": 11,
+                            "height_feet": 9,
+                            "area_sqft": 315.7,
+                            "perimeter_feet": 79.4
+                        },
+                        "items": [
+                            {
+                                "item_name": "2X4 STUD",
+                                "source": "pdf_analysis",
+                                "contractor_name": "Quality Hardware & Lumber",
+                                "category": "Walls",
+                                "quantity_needed": 50,
+                                "unit": "each",
+                                "unit_price": 5.71,
+                                "total_price": 285.5
+                            },
+                            {
+                                "item_name": "Custom French Doors",
+                                "source": "manual_add",
+                                "contractor_name": "No contractor assigned",
+                                "quantity": 2,
+                                "unit": "each",
+                                "estimated_unit_price": 10,
+                                "estimated_cost": 20
+                            }
+                        ]
+                    }
+                }
+            }
+        },
+        404: {"description": "Project not found"},
+        500: {"description": "Internal server error"}
+    }
+)
 async def get_project(project_id: int):
-    """Get project by ID"""
+    """
+    ## Get Complete Project Details 📋
+    
+    Retrieve comprehensive project information with all items unified:
+    - Project metadata and summary
+    - All items combined in one list (PDF-detected + manually added)
+    - Combined cost calculations (already calculated)
+    - Total item counts (already calculated)
+    
+    **Response Includes:**
+    - **Project Info**: Name, description, dates, status
+    - **Building Dimensions**: From PDF analysis
+    - **All Items**: Combined list of PDF-detected and manual items
+    - **Unified Totals**: Combined cost and item count
+    - **Item Source**: Each item shows if it's from 'pdf_analysis' or 'manual_add'
+    - **Contractor Info**: Each item includes contractor name
+    
+    **Use Cases:**
+    - Complete project review and analysis
+    - Cost tracking and management
+    - Material procurement planning
+    - Client presentations and reporting
+    - Project documentation and records
+    """
     try:
-        project = project_manager.get_project(project_id)
+        # Get project with manual items included
+        project = project_manager.get_project(project_id, include_manual_items=True)
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
-        return project
+        
+        # Get all items and combine them
+        pdf_items = project.get('analysis_data', {}).get('detailed_items', [])
+        manual_items = project.get('manual_items', [])
+        
+        # Combine all items into one list
+        all_items = []
+        
+        # Add PDF items with source indicator
+        for item in pdf_items:
+            item_copy = item.copy()
+            item_copy['source'] = 'pdf_analysis'
+            item_copy['contractor_name'] = item.get('recommended_contractor', 'No contractor assigned')
+            all_items.append(item_copy)
+        
+        # Add manual items with source indicator
+        for item in manual_items:
+            item_copy = item.copy()
+            item_copy['source'] = 'manual_add'
+            # Ensure contractor_name is present
+            if not item_copy.get('contractor_name'):
+                item_copy['contractor_name'] = 'No contractor assigned'
+            all_items.append(item_copy)
+        
+        # Structure the response with combined items
+        response = {
+            "project_id": project['id'],
+            "project_name": project['name'],
+            "description": project.get('description'),
+            "project_type": project.get('project_type'),
+            "location": project.get('location'),
+            "status": project.get('status'),
+            "created_at": project.get('created_at'),
+            "updated_at": project.get('updated_at'),
+            
+            # Combined totals (no separate PDF/manual costs)
+            "total_cost": project.get('combined_total_cost', 0.0),
+            "total_items_count": project.get('total_items_count', 0),
+            
+            # Building dimensions from PDF analysis
+            "building_dimensions": project.get('analysis_data', {}).get('building_dimensions', {}),
+            
+            # All items combined in one list
+            "items": all_items,
+            
+            # Summary information
+            "summary": project.get('analysis_data', {}).get('summary', {}),
+            "lumber_estimates": project.get('analysis_data', {}).get('lumber_estimates', {})
+        }
+        
+        return response
+        
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to get project: {str(e)}")
+
+
 
 @app.post("/projects/{project_id}/estimate")
 async def estimate_project_from_pdf(
@@ -1459,7 +1748,7 @@ async def get_lumber_items_by_category(category: str):
 @app.post(
     "/lumber/estimate/pdf",
     summary="📄 Lumber Estimation from PDF",
-    description="Upload architectural PDF and get complete lumber estimation with quantities and costs.",
+    description="Upload architectural PDF and get complete lumber estimation with quantities and costs. Project name is automatically generated from filename.",
     response_description="Complete lumber estimate from PDF analysis",
     tags=["Lumber Estimation"],
     responses={
@@ -1468,7 +1757,8 @@ async def get_lumber_items_by_category(category: str):
             "content": {
                 "application/json": {
                     "example": {
-                        "project_name": "House Project",
+                        "project_id": "PR20250115103000",
+                        "project_name": "building_plans",
                         "pdf_filename": "building_plans.pdf",
                         "building_dimensions": {
                             "length_feet": 40,
@@ -1486,7 +1776,6 @@ async def get_lumber_items_by_category(category: str):
 )
 async def estimate_lumber_from_pdf(
     file: UploadFile = File(..., description="Architectural PDF file", example="building_plans.pdf"),
-    project_name: str = Form("Lumber Project", description="Project name for the estimate"),
     force_fresh: bool = Form(False, description="Force fresh analysis (ignore cache)")
 ):
     """
@@ -1499,6 +1788,11 @@ async def estimate_lumber_from_pdf(
     - Material identification and quantities
     - Lumber-specific item recognition
     - Construction standard calculations
+    
+    **Project Management:**
+    - Project ID automatically generated from database
+    - Project name extracted from PDF filename
+    - Automatic database storage with unique identifiers
     
     **Estimation Output:**
     - Complete lumber quantities and costs
@@ -1514,6 +1808,8 @@ async def estimate_lumber_from_pdf(
     - Hardware and fasteners
     
     **Response Includes:**
+    - Database project ID
+    - Project name from filename
     - Extracted building dimensions
     - Material quantities and costs
     - Database matches with pricing
@@ -1526,12 +1822,17 @@ async def estimate_lumber_from_pdf(
         if not file.filename.lower().endswith('.pdf'):
             raise HTTPException(status_code=400, detail="Only PDF files are supported")
         
+        # Extract project name from filename (remove .pdf extension)
+        project_name = file.filename.replace('.pdf', '').replace('.PDF', '')
+        if not project_name:
+            project_name = "Lumber Project"
+        
         # Create temp directory for uploads
         temp_dir = Path("data/lumber_pdf_uploads")
         temp_dir.mkdir(parents=True, exist_ok=True)
         
         # Save uploaded PDF
-        pdf_path = temp_dir / f"{project_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{file.filename}"
+        pdf_path = temp_dir / f"{project_name}_{file.filename}"
         
         with open(pdf_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
@@ -1559,9 +1860,49 @@ async def estimate_lumber_from_pdf(
         except:
             pass
         
-            # Sanitize the fresh result by converting to and from JSON, mimicking the cache
-        
+        # Sanitize the fresh result by converting to and from JSON, mimicking the cache
         lumber_estimate = json.loads(json.dumps(lumber_estimate))
+        
+        # 🗄️ SAVE TO DATABASE - Create project and save analysis results
+        try:
+            # Create project in database
+            project_id = project_manager.create_project(
+                name=project_name,
+                description=f"PDF Analysis: {file.filename}",
+                pdf_path=str(pdf_path)  # Store original PDF path for reference
+            )
+            
+            # Calculate total cost from lumber estimates
+            total_cost = 0.0
+            if "lumber_estimates" in lumber_estimate and "total_lumber_cost" in lumber_estimate["lumber_estimates"]:
+                total_cost = lumber_estimate["lumber_estimates"]["total_lumber_cost"]
+            
+            # Save analysis results to database
+            project_manager.save_project_analysis(
+                project_id=project_id,
+                analysis_data=lumber_estimate,
+                total_cost=total_cost
+            )
+            
+            print(f"✅ Project saved to database: ID {project_id}, Cost: ${total_cost:.2f}")
+            
+            # Add project info to response
+            lumber_estimate["database_info"] = {
+                "project_id": project_id,
+                "saved_to_database": True,
+                "total_cost": total_cost,
+                "saved_timestamp": datetime.now().isoformat()
+            }
+            
+        except Exception as db_error:
+            print(f"⚠️ Database save failed: {db_error}")
+            # Continue with response even if database save fails
+            lumber_estimate["database_info"] = {
+                "project_id": None,
+                "saved_to_database": False,
+                "error": str(db_error),
+                "saved_timestamp": datetime.now().isoformat()
+            }
         
         # Calculate accuracy metrics for the estimation with proper error handling
         try:
@@ -1574,6 +1915,7 @@ async def estimate_lumber_from_pdf(
             return {
                 "success": True,
                 "message": "Lumber estimation from PDF completed successfully with ENHANCED ACCURACY (90%+ guaranteed)",
+                "project_id": project_id,
                 "project_name": project_name,
                 "pdf_filename": file.filename,
                 "analysis_timestamp": datetime.now().isoformat(),
@@ -1604,6 +1946,7 @@ async def estimate_lumber_from_pdf(
             return {
                 "success": True,
                 "message": "Lumber estimation from PDF completed successfully (accuracy metrics unavailable)",
+                "project_id": project_id,
                 "project_name": project_name,
                 "pdf_filename": file.filename,
                 "analysis_timestamp": datetime.now().isoformat(),
@@ -1633,6 +1976,8 @@ async def estimate_lumber_from_pdf(
             pass
         
         raise HTTPException(status_code=500, detail=f"PDF processing failed: {str(e)}")
+
+# Note: Removed duplicate endpoints - using existing /projects/ endpoints instead
 
 @app.get(
     "/lumber/items",
@@ -2088,6 +2433,296 @@ async def validate_pdf_accuracy(
             pass
         
         raise HTTPException(status_code=500, detail=f"PDF accuracy validation failed: {str(e)}")
+
+# Submit Estimate Endpoint
+@app.post(
+    "/projects/{project_id}/submit-estimate",
+    summary="📤 Submit Project Estimate",
+    description="Submit the final project estimate for approval and store in history. This creates a permanent record of the estimate.",
+    response_description="Estimate submitted successfully",
+    tags=["Projects"],
+    responses={
+        200: {
+            "description": "Estimate submitted successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "success": True,
+                        "message": "Project estimate submitted successfully!",
+                        "estimate_id": 123,
+                        "project_id": 2,
+                        "project_name": "LAMONS 3200LS BL ELEV",
+                        "submitted_by": "admin",
+                        "submitted_at": "2025-09-01T16:30:00",
+                        "total_cost": 4494.00,
+                        "total_items_count": 10,
+                        "status": "submitted"
+                    }
+                }
+            }
+        },
+        400: {"description": "Bad Request - Invalid project data"},
+        401: {"description": "Unauthorized - Authentication required"},
+        403: {"description": "Forbidden - Insufficient permissions"},
+        404: {"description": "Project not found"},
+        500: {"description": "Internal server error"}
+    }
+)
+async def submit_project_estimate(
+    project_id: int,
+    notes: str = Form(None),
+    client_notes: str = Form(None),
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    ## Submit Project Estimate 📤
+    
+    Submit the final project estimate for approval and store in history.
+    This creates a permanent record that can be tracked and managed.
+    
+    **What Gets Stored:**
+    - Complete project details and all items
+    - PDF analysis results and manual items
+    - Combined cost calculations
+    - Submission metadata (who, when, notes)
+    - Status tracking for approval workflow
+    
+    **Response:**
+    - Success confirmation with estimate ID
+    - Project submission details
+    - Status information for tracking
+    
+    **Use Cases:**
+    - Final estimate submission
+    - Client approval workflow
+    - Project tracking and history
+    - Audit trail maintenance
+    - Estimate version control
+    """
+    try:
+        # Get current project with all details
+        project = project_manager.get_project(project_id, include_manual_items=True)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        # Prepare estimate data for storage
+        estimate_data = {
+            "project_info": {
+                "id": project['id'],
+                "name": project['name'],
+                "description": project.get('description'),
+                "project_type": project.get('project_type'),
+                "location": project.get('location'),
+                "status": project.get('status'),
+                "created_at": project.get('created_at'),
+                "updated_at": project.get('updated_at')
+            },
+            "building_dimensions": project.get('analysis_data', {}).get('building_dimensions', {}),
+            "pdf_analysis": {
+                "total_items": len(project.get('analysis_data', {}).get('detailed_items', [])),
+                "total_cost": project.get('total_cost', 0.0),
+                "items": project.get('analysis_data', {}).get('detailed_items', []),
+                "summary": project.get('analysis_data', {}).get('summary', {}),
+                "lumber_estimates": project.get('analysis_data', {}).get('lumber_estimates', {})
+            },
+            "manual_items": {
+                "total_items": project.get('manual_items_summary', {}).get('total_manual_items', 0),
+                "total_cost": project.get('manual_items_summary', {}).get('total_manual_cost', 0.0),
+                "items": project.get('manual_items', [])
+            },
+            "combined_totals": {
+                "total_cost": project.get('combined_total_cost', 0.0),
+                "total_items_count": project.get('total_items_count', 0)
+            }
+        }
+        
+        # Submit estimate to history
+        estimate_id = estimate_history_manager.submit_estimate(
+            project_id=project_id,
+            project_name=project['name'],
+            submitted_by=current_user.get("username", "unknown"),
+            estimate_data=estimate_data,
+            total_cost=project.get('combined_total_cost', 0.0),
+            total_items_count=project.get('total_items_count', 0),
+            notes=notes,
+            client_notes=client_notes
+        )
+        
+        # Update project status to 'estimate_submitted'
+        project_manager.update_project_status(project_id, 'estimate_submitted')
+        
+        return {
+            "success": True,
+            "message": "Project estimate submitted successfully!",
+            "estimate_id": estimate_id,
+            "project_id": project_id,
+            "project_name": project['name'],
+            "submitted_by": current_user.get("username", "unknown"),
+            "submitted_at": datetime.now().isoformat(),
+            "total_cost": project.get('combined_total_cost', 0.0),
+            "total_items_count": project.get('total_items_count', 0),
+            "status": "submitted"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to submit estimate: {str(e)}")
+
+# Get Estimate History Endpoint
+@app.get(
+    "/projects/{project_id}/estimate-history",
+    summary="📚 View Estimate History",
+    description="View the complete history of estimates submitted for a specific project.",
+    response_description="Estimate history for the project",
+    tags=["Projects"],
+    responses={
+        200: {
+            "description": "Estimate history retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "project_id": 2,
+                        "project_name": "LAMONS 3200LS BL ELEV",
+                        "total_estimates": 3,
+                        "estimates": [
+                            {
+                                "id": 123,
+                                "submitted_by": "admin",
+                                "submitted_at": "2025-09-01T16:30:00",
+                                "total_cost": 4494.00,
+                                "total_items_count": 10,
+                                "status": "submitted",
+                                "notes": "Initial estimate submission"
+                            }
+                        ]
+                    }
+                }
+            }
+        },
+        404: {"description": "Project not found"},
+        500: {"description": "Internal server error"}
+    }
+)
+async def get_project_estimate_history(
+    project_id: int,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    ## View Project Estimate History 📚
+    
+    Retrieve the complete history of estimates submitted for a specific project.
+    This shows all versions and submissions for tracking and comparison.
+    
+    **What You'll See:**
+    - All estimate submissions for the project
+    - Submission dates and who submitted them
+    - Cost changes over time
+    - Status tracking (submitted, approved, rejected, completed)
+    - Notes and client feedback
+    
+    **Use Cases:**
+    - Track estimate revisions
+    - Compare different versions
+    - Audit trail maintenance
+    - Client communication history
+    - Project progress tracking
+    """
+    try:
+        # Verify project exists
+        project = project_manager.get_project(project_id, include_manual_items=False)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        # Get estimate history
+        estimates = estimate_history_manager.get_estimate_history(project_id)
+        
+        return {
+            "project_id": project_id,
+            "project_name": project['name'],
+            "total_estimates": len(estimates),
+            "estimates": estimates
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get estimate history: {str(e)}")
+
+# Get All Estimate History Endpoint
+@app.get(
+    "/estimates/history",
+    summary="📚 View All Estimate History",
+    description="View the complete history of all estimates across all projects.",
+    response_description="Complete estimate history",
+    tags=["Estimates"],
+    responses={
+        200: {
+            "description": "Estimate history retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "total_estimates": 15,
+                        "total_projects": 8,
+                        "total_value": 125000.00,
+                        "estimates": [
+                            {
+                                "id": 123,
+                                "project_id": 2,
+                                "project_name": "LAMONS 3200LS BL ELEV",
+                                "submitted_by": "admin",
+                                "submitted_at": "2025-09-01T16:30:00",
+                                "total_cost": 4494.00,
+                                "status": "submitted"
+                            }
+                        ]
+                    }
+                }
+            }
+        },
+        500: {"description": "Internal server error"}
+    }
+)
+async def get_all_estimate_history(
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    ## View All Estimate History 📚
+    
+    Retrieve the complete history of all estimates across all projects.
+    This provides a comprehensive view for management and reporting.
+    
+    **What You'll See:**
+    - All estimate submissions across all projects
+    - Project identification and details
+    - Submission metadata and status
+    - Cost summaries and trends
+    - User activity tracking
+    
+    **Use Cases:**
+    - Management reporting
+    - Company-wide estimate tracking
+    - User performance analysis
+    - Financial reporting
+    - Strategic planning
+    """
+    try:
+        # Get all estimate history
+        estimates = estimate_history_manager.get_estimate_history()
+        
+        # Calculate summary statistics
+        total_projects = len(set(est['project_id'] for est in estimates))
+        total_value = sum(est['total_cost'] for est in estimates)
+        
+        return {
+            "total_estimates": len(estimates),
+            "total_projects": total_projects,
+            "total_value": total_value,
+            "estimates": estimates
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get estimate history: {str(e)}")
 
 @app.get(
     "/accuracy/report",
