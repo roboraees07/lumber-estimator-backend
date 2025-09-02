@@ -1166,31 +1166,65 @@ async def get_projects():
         for project in projects:
             # Count total items from analysis data and manual items
             total_items_found = 0
+            
+            # Count items from PDF analysis
             if project.get('analysis_data'):
                 try:
                     analysis_data = project['analysis_data']
                     if isinstance(analysis_data, str):
                         analysis_data = json.loads(analysis_data)
                     
-                    # Count items from PDF analysis
                     if isinstance(analysis_data, dict):
-                        detailed_items = analysis_data.get('detailed_items', [])
-                        if isinstance(detailed_items, list):
-                            total_items_found += len(detailed_items)
-                        
-                        # Also check lumber estimates
-                        lumber_estimates = analysis_data.get('lumber_estimates', {})
-                        if isinstance(lumber_estimates, dict):
-                            detailed_lumber_specs = lumber_estimates.get('detailed_lumber_specs', [])
-                            if isinstance(detailed_lumber_specs, list):
-                                total_items_found += len(detailed_lumber_specs)
-                except:
-                    pass
+                        # First, try to use the summary count if available (most accurate)
+                        summary = analysis_data.get('summary', {})
+                        if isinstance(summary, dict) and 'total_items_found' in summary:
+                            total_items_found = summary['total_items_found']
+                            print(f"Project {project.get('name')}: Using summary count: {total_items_found}")
+                        else:
+                            # Fallback: count detailed items manually
+                            detailed_items = analysis_data.get('detailed_items', [])
+                            if isinstance(detailed_items, list):
+                                total_items_found += len(detailed_items)
+                                print(f"Project {project.get('name')}: Counted {len(detailed_items)} detailed items")
+                            
+                            # Also check for any other item arrays
+                            lumber_estimates = analysis_data.get('lumber_estimates', {})
+                            if isinstance(lumber_estimates, dict):
+                                detailed_lumber_specs = lumber_estimates.get('detailed_lumber_specs', [])
+                                if isinstance(detailed_lumber_specs, list):
+                                    total_items_found += len(detailed_lumber_specs)
+                                    print(f"Project {project.get('name')}: Counted {len(detailed_lumber_specs)} lumber specs")
+                                
+                                lumber_items = lumber_estimates.get('lumber_items', [])
+                                if isinstance(lumber_items, list):
+                                    total_items_found += len(lumber_items)
+                                    print(f"Project {project.get('name')}: Counted {len(lumber_items)} lumber items")
+                except Exception as e:
+                    print(f"Error parsing analysis data for project {project.get('id')}: {e}")
+                    # If parsing fails, try to count items manually
+                    try:
+                        if isinstance(project['analysis_data'], str):
+                            raw_data = json.loads(project['analysis_data'])
+                            if 'detailed_items' in raw_data and isinstance(raw_data['detailed_items'], list):
+                                total_items_found = len(raw_data['detailed_items'])
+                                print(f"Project {project.get('name')}: Fallback count: {total_items_found}")
+                    except:
+                        pass
             
-            # Count manual items if available
-            if project.get('manual_items'):
-                if isinstance(project['manual_items'], list):
-                    total_items_found += len(project['manual_items'])
+            # Count manual items by querying the database directly
+            try:
+                project_id = project.get('id')
+                if project_id:
+                    manual_items = manual_items_manager.get_manual_items_for_project(project_id)
+                    if isinstance(manual_items, list):
+                        total_items_found += len(manual_items)
+                        print(f"Project {project.get('name')}: Found {len(manual_items)} manual items")
+            except Exception as e:
+                print(f"Error getting manual items for project {project.get('id')}: {e}")
+                pass
+            
+            # Debug output
+            print(f"Project {project.get('name')}: Total materials count = {total_items_found}")
             
             simplified_project = {
                 "id": project.get('id'),
