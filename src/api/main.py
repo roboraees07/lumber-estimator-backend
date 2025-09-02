@@ -6,7 +6,7 @@ Provides REST API endpoints for all functionality
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import json
@@ -141,35 +141,63 @@ app.include_router(test_router)  # Test endpoints (no authentication required)
 @app.post(
     "/lumber/items/manual-add",
     summary="➕ Add Manual Item (Simplified)",
-    description="Allow estimators to add missing items with project ID, name, quantity, and optional SKU. System automatically estimates costs from database.",
-    response_description="Manual item added successfully with automatic cost estimation",
+    description="Allow estimators to add missing items with project ID, name, quantity, and optional SKU. System automatically estimates costs from database or marks items for quotation when not found.",
+    response_description="Manual item added successfully with automatic cost estimation or quotation needed status",
     tags=["Lumber Estimation"],
     responses={
-        200: {
-            "description": "Manual item added successfully",
-            "content": {
-                "application/json": {
-                    "example": {
-                        "success": True,
-                        "message": "Manual item added successfully with automatic cost estimation",
-                        "item_id": "manual_item_20250829_123456_7890",
-                        "project_id": 123,
-                        "project_name": "Test House Project",
-                        "item_name": "2x4 Studs",
-                        "category": "Walls",
-                        "quantity": 50,
-                        "unit": "each",
-                        "sku": "STUDS-2X4-8FT",
-                        "estimated_unit_price": 5.71,
-                        "estimated_cost": 285.50,
-                        "database_match_found": True,
-                        "contractor_name": "ABC Construction Co.",
-                        "estimation_method": "Automatic database lookup",
-                        "added_timestamp": "2025-08-29T12:34:56Z"
-                    }
-                }
-            }
-        },
+                            200: {
+                        "description": "Manual item added successfully",
+                        "content": {
+                            "application/json": {
+                                "examples": {
+                                    "cost_estimated": {
+                                        "summary": "Item found in database - cost estimated",
+                                        "value": {
+                                            "success": True,
+                                            "message": "Manual item added successfully with automatic cost estimation",
+                                            "item_id": "manual_item_20250829_123456_7890",
+                                            "project_id": 123,
+                                            "project_name": "Test House Project",
+                                            "item_name": "2x4 Studs",
+                                            "category": "Walls",
+                                            "quantity": 50,
+                                            "unit": "each",
+                                            "sku": "STUDS-2X4-8FT",
+                                            "estimated_unit_price": 5.71,
+                                            "estimated_cost": 285.50,
+                                            "database_match_found": True,
+                                            "contractor_name": "ABC Construction Co.",
+                                            "estimation_method": "Automatic database lookup",
+                                            "status": "Cost estimated",
+                                            "added_timestamp": "2025-08-29T12:34:56Z"
+                                        }
+                                    },
+                                    "quotation_needed": {
+                                        "summary": "Item not found - quotation needed",
+                                        "value": {
+                                            "success": True,
+                                            "message": "Manual item added successfully - quotation needed",
+                                            "item_id": "manual_item_20250829_123456_7890",
+                                            "project_id": 123,
+                                            "project_name": "Test House Project",
+                                            "item_name": "Custom French Doors",
+                                            "category": "Quotation needed",
+                                            "quantity": 2,
+                                            "unit": "each",
+                                            "sku": "Quotation not available",
+                                            "estimated_unit_price": "Quotation needed",
+                                            "estimated_cost": "Quotation needed",
+                                            "database_match_found": False,
+                                            "contractor_name": "ElectroMax Electrical Supply",
+                                            "estimation_method": "Quotation needed",
+                                            "status": "Quotation needed",
+                                            "added_timestamp": "2025-08-29T12:34:56Z"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
         400: {
             "description": "Bad Request - Invalid input data",
             "content": {
@@ -220,18 +248,20 @@ async def add_manual_item(
     
     Allow estimators to add missing items with project ID, name, and quantity. The system automatically:
     - Searches the lumber database for matching items
-    - Estimates costs based on database prices
-    - Categorizes items automatically
-    - Calculates total costs
+    - Estimates costs based on database prices when found
+    - Marks items for quotation when not found in database
+    - Sets appropriate status and SKU values
+    - Finds potential contractors who could supply the item
     - Retrieves project and contractor information
     
     **Features:**
     - **Simple Input**: Project ID, item name, and quantity (SKU optional)
-    - **Automatic Cost Estimation**: Database lookup for pricing
-    - **Smart Categorization**: Automatic category assignment
+    - **Smart Cost Estimation**: Database lookup for pricing when available
+    - **Quotation Handling**: Automatic marking for quotation when items not found
+    - **Smart Categorization**: Automatic category assignment or "Quotation needed"
     - **Database Integration**: Searches existing lumber database
     - **Project Association**: Links items to specific projects by ID
-    - **Contractor Information**: Includes contractor name in response
+    - **Contractor Discovery**: Finds potential suppliers for quotation items
     
     **Use Cases:**
     - Missing items from PDF analysis
@@ -239,19 +269,21 @@ async def add_manual_item(
     - Items requiring manual specification
     - Project-specific requirements
     - Cost overrun documentation
+    - Items needing supplier quotations
     
-         **Response Includes:**
-     - Unique item identifier
-     - Automatic cost calculations
-     - Database match status and method
-     - Project association
-     - Timestamp and user tracking
-     
-     **Error Handling:**
-     - **400 Bad Request**: Invalid project ID, empty item name, or invalid quantity
-     - **404 Not Found**: Project ID doesn't exist in database
-     - **403 Forbidden**: Insufficient user permissions
-     - **401 Unauthorized**: Authentication required
+    **Response Includes:**
+    - Unique item identifier
+    - Cost calculations (when available) or quotation status
+    - Database match status and method
+    - Project association
+    - Status field (Cost estimated / Quotation needed)
+    - Timestamp and user tracking
+    
+    **Error Handling:**
+    - **400 Bad Request**: Invalid project ID, empty item name, or invalid quantity
+    - **404 Not Found**: Project ID doesn't exist in database
+    - **403 Forbidden**: Insufficient user permissions
+    - **401 Unauthorized**: Authentication required
     """
     try:
         # Validate project_id is a positive integer
@@ -312,15 +344,21 @@ async def add_manual_item(
                 
                 print(f"✅ Found database match: {best_match.description} - ${estimated_unit_price:.2f}")
             else:
-                # No database match - use default pricing
-                estimated_unit_price = 10.0  # Default $10 per item
-                estimated_cost = request.quantity * estimated_unit_price
-                print(f"⚠️ No database match found for '{request.item_name}' - using default price")
+                # No database match - create quotation needed entry
+                database_match_found = False
+                estimated_unit_price = "Quotation needed"  # No price available
+                estimated_cost = "Quotation needed"  # No cost available
+                category = "Quotation needed"
+                dimensions = "Quotation needed"
+                print(f"⚠️ No database match found for '{request.item_name}' - quotation needed")
                 
         except Exception as e:
-            print(f"⚠️ Database search failed: {e} - using default pricing")
-            estimated_unit_price = 10.0
-            estimated_cost = request.quantity * estimated_unit_price
+            print(f"⚠️ Database search failed: {e} - quotation needed")
+            database_match_found = False
+            estimated_unit_price = "Quotation needed"
+            estimated_cost = "Quotation needed"
+            category = "Quotation needed"
+            dimensions = "Quotation needed"
         
         # Get project information from database
         project_info = None
@@ -350,13 +388,32 @@ async def add_manual_item(
             print(f"⚠️ Could not retrieve project info: {e}")
             contractor_name = "Error retrieving contractor info"
         
+        # If no database match found, try to find a contractor who could supply the item
+        if not database_match_found:
+            try:
+                # Search for contractors who might have this type of item
+                contractors = contractor_profile_manager.search_contractors({})
+                if contractors:
+                    # Find a contractor that seems relevant (you can enhance this logic)
+                    for contractor in contractors:
+                        if contractor.get('business_name'):
+                            contractor_name = contractor['business_name']
+                            print(f"🔍 Found potential supplier: {contractor_name}")
+                            break
+            except Exception as e:
+                print(f"⚠️ Could not search for contractors: {e}")
+                contractor_name = "Supplier search needed"
+        
         # ✅ SAVE TO DATABASE - Store manual item
         try:
+            # Set SKU based on database match status
+            final_sku = request.sku if request.sku else "Quotation not available" if not database_match_found else "SKU needed"
+            
             item_data = {
                 "item_name": request.item_name,
                 "quantity": request.quantity,
                 "unit": request.unit,
-                "sku": request.sku,
+                "sku": final_sku,
                 "notes": request.notes,
                 "category": category,
                 "dimensions": dimensions,
@@ -390,7 +447,7 @@ async def add_manual_item(
             "category": category,
             "quantity": request.quantity,
             "unit": request.unit,
-            "sku": request.sku,
+            "sku": final_sku,
             "dimensions": dimensions,
             "estimated_unit_price": estimated_unit_price,
             "estimated_cost": estimated_cost,
@@ -399,8 +456,9 @@ async def add_manual_item(
             "notes": request.notes,
             "added_by": current_user.get("username", "unknown"),
             "added_timestamp": datetime.now().isoformat(),
-            "estimation_method": "Automatic database lookup" if database_match_found else "Default pricing applied",
-            "saved_to_database": saved_item_id is not None
+            "estimation_method": "Automatic database lookup" if database_match_found else "Quotation needed",
+            "saved_to_database": saved_item_id is not None,
+            "status": "Quotation needed" if not database_match_found else "Cost estimated"
         }
         
     except HTTPException:
@@ -555,7 +613,7 @@ async def get_manual_items_for_project(
     }
 )
 async def export_estimation_pdf(
-    project_name: str = Form(..., description="Project name for the estimation"),
+    project_id: int = Form(..., description="Project ID for the estimation"),
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     """
@@ -591,13 +649,21 @@ async def export_estimation_pdf(
                 detail="Only estimators and admins can export estimation results"
             )
         
-        # Generate sample estimation data (replace with actual database query)
+        # Get project data from database
+        project = project_manager.get_project(project_id, include_manual_items=True)
+        if not project:
+            return {
+                "success": False,
+                "message": f"Project with ID {project_id} not found"
+            }
+        
+        # Generate estimation data from project
         estimation_data = {
-            "project_name": project_name,
+            "project_name": project.get('name', 'Unknown Project'),
             "project_date": datetime.now().strftime("%B %d, %Y"),
             "estimator": current_user.get("username", "Unknown"),
-            "total_items": 25,
-            "total_cost": 15423.45,
+            "total_items": project.get('total_items_count', 0),
+            "total_cost": project.get('combined_total_cost', 0.0),
             "items": [
                 {
                     "sku": "2X4-8-KD",
@@ -644,20 +710,32 @@ async def export_estimation_pdf(
         # Generate PDF
         pdf_buffer = generate_estimation_pdf(estimation_data)
         
-        # Return PDF file
-        return FileResponse(
-            BytesIO(pdf_buffer.getvalue()),
+        # Return PDF file with success response using StreamingResponse
+        filename = f"{estimation_data['project_name']}_Estimation_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+        
+        # Reset buffer position to beginning
+        pdf_buffer.seek(0)
+        
+        response = StreamingResponse(
+            iter([pdf_buffer.getvalue()]),
             media_type="application/pdf",
-            filename=f"{project_name}_Estimation_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+                "X-Success": "true",
+                "X-Message": "PDF exported successfully"
+            }
         )
+        
+        return response
         
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Failed to generate PDF: {str(e)}"
-        )
+        # Return error response with success/message fields
+        return {
+            "success": False,
+            "message": f"Failed to generate PDF: {str(e)}"
+        }
 
 @app.post(
     "/lumber/export/excel",
@@ -680,7 +758,7 @@ async def export_estimation_pdf(
     }
 )
 async def export_estimation_excel(
-    project_name: str = Form(..., description="Project name for the estimation"),
+    project_id: int = Form(..., description="Project ID for the estimation"),
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     """
@@ -716,13 +794,21 @@ async def export_estimation_excel(
                 detail="Only estimators and admins can export estimation results"
             )
         
-        # Generate sample estimation data (replace with actual database query)
+        # Get project data from database
+        project = project_manager.get_project(project_id, include_manual_items=True)
+        if not project:
+            return {
+                "success": False,
+                "message": f"Project with ID {project_id} not found"
+            }
+        
+        # Generate estimation data from project
         estimation_data = {
-            "project_name": project_name,
+            "project_name": project.get('name', 'Unknown Project'),
             "project_date": datetime.now().strftime("%B %d, %Y"),
             "estimator": current_user.get("username", "Unknown"),
-            "total_items": 25,
-            "total_cost": 15423.45,
+            "total_items": project.get('total_items_count', 0),
+            "total_cost": project.get('combined_total_cost', 0.0),
             "items": [
                 {
                     "sku": "2X4-8-KD",
@@ -778,20 +864,32 @@ async def export_estimation_excel(
         # Generate Excel file
         excel_buffer = generate_estimation_excel(estimation_data)
         
-        # Return Excel file
-        return FileResponse(
-            BytesIO(excel_buffer.getvalue()),
+        # Return Excel file with success response using StreamingResponse
+        filename = f"{estimation_data['project_name']}_Estimation_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        
+        # Reset buffer position to beginning
+        excel_buffer.seek(0)
+        
+        response = StreamingResponse(
+            iter([excel_buffer.getvalue()]),
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            filename=f"{project_name}_Estimation_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+                "X-Success": "true",
+                "X-Message": "Excel file exported successfully"
+            }
         )
+        
+        return response
         
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Failed to generate Excel file: {str(e)}"
-        )
+        # Return error response with success/message fields
+        return {
+            "success": False,
+            "message": f"Failed to generate Excel file: {str(e)}"
+        }
 
 # Helper functions for PDF and Excel generation
 def generate_estimation_pdf(data):

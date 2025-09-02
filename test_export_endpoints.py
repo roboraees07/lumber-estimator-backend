@@ -43,7 +43,7 @@ def test_pdf_export(token):
         response = requests.post(
             f"{BASE_URL}/lumber/export/pdf",
             headers=headers,
-            data={"project_name": "Test House Project"}
+            data={"project_id": 1}
         )
         
         print(f"📊 Status Code: {response.status_code}")
@@ -78,7 +78,7 @@ def test_excel_export(token):
         response = requests.post(
             f"{BASE_URL}/lumber/export/excel",
             headers=headers,
-            data={"project_name": "Test House Project"}
+            data={"project_id": 1}
         )
         
         print(f"📊 Status Code: {response.status_code}")
@@ -124,7 +124,7 @@ def test_both_exports(token):
             pdf_response = requests.post(
                 f"{BASE_URL}/lumber/export/pdf",
                 headers=headers,
-                data={"project_name": project}
+                data={"project_id": i}
             )
             
             if pdf_response.status_code == 200:
@@ -143,7 +143,7 @@ def test_both_exports(token):
             excel_response = requests.post(
                 f"{BASE_URL}/lumber/export/excel",
                 headers=headers,
-                data={"project_name": project}
+                data={"project_id": i}
             )
             
             if excel_response.status_code == 200:
