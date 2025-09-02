@@ -18,9 +18,9 @@ The `/lumber/estimate/pdf` endpoint was **NOT saving results to the database**. 
 
 The existing project endpoints now work with PDF analysis data:
 
-#### **`GET /projects/`** (Already existed)
+#### **`GET /projects/all`** (Updated endpoint name)
 - Retrieve all projects including PDF analysis projects
-- Shows project summaries with cost and dimension info
+- Shows simplified project information with essential fields only
 - Requires estimator or admin authentication
 
 #### **`GET /projects/{project_id}`** (Already existed)
@@ -86,7 +86,7 @@ curl -X POST "http://localhost:8003/lumber/estimate/pdf" \
 
 ### **2. Check Saved Projects**
 ```bash
-curl -X GET "http://localhost:8003/projects/" \
+curl -X GET "http://localhost:8003/projects/all" \
   -H "Authorization: Bearer YOUR_JWT_TOKEN"
 ```
 

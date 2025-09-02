@@ -1155,12 +1155,62 @@ async def create_project(project: ProjectCreate):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@app.get("/projects/")
+@app.get("/projects/all")
 async def get_projects():
-    """Get all projects"""
+    """Get all projects with simplified response"""
     try:
         projects = project_manager.get_all_projects()
-        return {"projects": projects}
+        
+        # Transform projects to only include the required fields
+        simplified_projects = []
+        for project in projects:
+            # Count total items from analysis data and manual items
+            total_items_found = 0
+            if project.get('analysis_data'):
+                try:
+                    analysis_data = project['analysis_data']
+                    if isinstance(analysis_data, str):
+                        analysis_data = json.loads(analysis_data)
+                    
+                    # Count items from PDF analysis
+                    if isinstance(analysis_data, dict):
+                        detailed_items = analysis_data.get('detailed_items', [])
+                        if isinstance(detailed_items, list):
+                            total_items_found += len(detailed_items)
+                        
+                        # Also check lumber estimates
+                        lumber_estimates = analysis_data.get('lumber_estimates', {})
+                        if isinstance(lumber_estimates, dict):
+                            detailed_lumber_specs = lumber_estimates.get('detailed_lumber_specs', [])
+                            if isinstance(detailed_lumber_specs, list):
+                                total_items_found += len(detailed_lumber_specs)
+                except:
+                    pass
+            
+            # Count manual items if available
+            if project.get('manual_items'):
+                if isinstance(project['manual_items'], list):
+                    total_items_found += len(project['manual_items'])
+            
+            simplified_project = {
+                "id": project.get('id'),
+                "name": project.get('name'),
+                "description": project.get('description'),
+                "project_type": project.get('project_type'),
+                "location": project.get('location'),
+                "pdf_path": project.get('pdf_path'),
+                "total_cost": project.get('total_cost'),
+                "estimated_duration_days": project.get('estimated_duration_days'),
+                "start_date": project.get('start_date'),
+                "end_date": project.get('end_date'),
+                "status": project.get('status'),
+                "client_name": project.get('client_name'),
+                "client_contact": project.get('client_contact'),
+                "materials": total_items_found
+            }
+            simplified_projects.append(simplified_project)
+        
+        return {"projects": simplified_projects}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
