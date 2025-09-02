@@ -1163,6 +1163,9 @@ async def get_projects():
         
         # Transform projects to only include the required fields
         simplified_projects = []
+        projects_processed = 0
+        errors_encountered = 0
+        
         for project in projects:
             # Count total items from analysis data and manual items
             total_items_found = 0
@@ -1201,6 +1204,7 @@ async def get_projects():
                                     print(f"Project {project.get('name')}: Counted {len(lumber_items)} lumber items")
                 except Exception as e:
                     print(f"Error parsing analysis data for project {project.get('id')}: {e}")
+                    errors_encountered += 1
                     # If parsing fails, try to count items manually
                     try:
                         if isinstance(project['analysis_data'], str):
@@ -1221,10 +1225,14 @@ async def get_projects():
                         print(f"Project {project.get('name')}: Found {len(manual_items)} manual items")
             except Exception as e:
                 print(f"Error getting manual items for project {project.get('id')}: {e}")
+                errors_encountered += 1
                 pass
             
             # Debug output
             print(f"Project {project.get('name')}: Total materials count = {total_items_found}")
+            
+            # Track processing
+            projects_processed += 1
             
             simplified_project = {
                 "id": project.get('id'),
@@ -1244,8 +1252,25 @@ async def get_projects():
             }
             simplified_projects.append(simplified_project)
         
-        return {"projects": simplified_projects}
+        # Determine success message based on processing results
+        if errors_encountered > 0:
+            message = f"Projects retrieved with {errors_encountered} errors. {projects_processed} projects processed successfully."
+            success = False
+        elif projects_processed == 0:
+            message = "No projects found in the system."
+            success = True
+        else:
+            message = f"Successfully retrieved {projects_processed} projects with materials count."
+            success = True
+        
+        return {
+            "success": success,
+            "message": message,
+            "projects": simplified_projects
+        }
     except Exception as e:
+        # Log the error for debugging
+        print(f"Error in get_projects: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get(
