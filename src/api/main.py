@@ -360,6 +360,14 @@ async def add_manual_item(
             category = "Quotation needed"
             dimensions = "Quotation needed"
         
+        # Check if user owns this project
+        user_id = current_user.get("id")
+        if not user_id:
+            raise HTTPException(status_code=400, detail="User ID not found in token")
+        
+        if not project_manager.user_owns_project(user_id, request.project_id):
+            raise HTTPException(status_code=403, detail="Access denied. You can only add manual items to your own projects.")
+        
         # Get project information from database
         project_info = None
         contractor_name = "Not specified"
@@ -543,8 +551,12 @@ async def get_manual_items_for_project(
         
         # ✅ GET FROM DATABASE - Retrieve manual items
         try:
-            # Get project by name first to get project ID
-            projects = project_manager.get_all_projects()
+            # Get project by name first to get project ID (only user's projects)
+            user_id = current_user.get("id")
+            if not user_id:
+                raise HTTPException(status_code=400, detail="User ID not found in token")
+            
+            projects = project_manager.get_projects_by_user(user_id)
             project = None
             for p in projects:
                 if p['name'] == project_name:
@@ -1242,22 +1254,32 @@ async def health_check():
 
 # Project estimation endpoints
 @app.post("/projects/")
-async def create_project(project: ProjectCreate):
+async def create_project(project: ProjectCreate, current_user: Dict[str, Any] = Depends(get_current_user)):
     """Create a new project"""
     try:
+        user_id = current_user.get("id")
+        if not user_id:
+            raise HTTPException(status_code=400, detail="User ID not found in token")
+        
         project_id = project_manager.create_project(
             name=project.name,
-            description=project.description
+            description=project.description,
+            user_id=user_id
         )
         return {"project_id": project_id, "message": "Project created successfully"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/projects/all")
-async def get_projects():
-    """Get all projects with simplified response"""
+async def get_projects(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """Get projects for the authenticated user with simplified response"""
     try:
-        projects = project_manager.get_all_projects()
+        # Get projects only for the current user
+        user_id = current_user.get("id")
+        if not user_id:
+            raise HTTPException(status_code=400, detail="User ID not found in token")
+        
+        projects = project_manager.get_projects_by_user(user_id)
         
         # Transform projects to only include the required fields
         simplified_projects = []
@@ -1428,7 +1450,7 @@ async def get_projects():
         500: {"description": "Internal server error"}
     }
 )
-async def get_project(project_id: int):
+async def get_project(project_id: int, current_user: Dict[str, Any] = Depends(get_current_user)):
     """
     ## Get Complete Project Details 📋
     
@@ -1445,7 +1467,7 @@ async def get_project(project_id: int):
     - **Unified Totals**: Combined cost and item count
     - **Items Needing Quotation**: Count of items requiring price quotes
     - **Item Details**: Each item includes SKU, status, source, and contractor info
-    - **Item Source**: Each item shows if it's from 'pdf_analysis' or 'manual_add'
+    - **Item Source**: Each item shows if it's from 'pdf_analysis' or 'pdf_analysis' or 'manual_add'
     - **Item Status**: Available, quotation_needed, manual_added, or unknown
     
     **Use Cases:**
@@ -1456,6 +1478,14 @@ async def get_project(project_id: int):
     - Project documentation and records
     """
     try:
+        # Check if user owns this project
+        user_id = current_user.get("id")
+        if not user_id:
+            raise HTTPException(status_code=400, detail="User ID not found in token")
+        
+        if not project_manager.user_owns_project(user_id, project_id):
+            raise HTTPException(status_code=403, detail="Access denied. You can only view your own projects.")
+        
         # Get project with manual items included
         project = project_manager.get_project(project_id, include_manual_items=True)
         if not project:
@@ -1571,6 +1601,14 @@ async def estimate_project_from_pdf(
 ):
     """Upload PDF and generate estimation for project"""
     try:
+        # Check if user owns this project
+        user_id = current_user.get("id")
+        if not user_id:
+            raise HTTPException(status_code=400, detail="User ID not found in token")
+        
+        if not project_manager.user_owns_project(user_id, project_id):
+            raise HTTPException(status_code=403, detail="Access denied. You can only estimate your own projects.")
+        
         # Check if project exists
         project = project_manager.get_project(project_id)
         if not project:
@@ -1711,9 +1749,14 @@ async def estimate_pdf_direct(
         # Create temporary project if name provided
         project_id = None
         if project_name:
+            user_id = current_user.get("id")
+            if not user_id:
+                raise HTTPException(status_code=400, detail="User ID not found in token")
+            
             project_id = project_manager.create_project(
                 name=project_name,
-                description=f"Auto-created from PDF: {file.filename}"
+                description=f"Auto-created from PDF: {file.filename}",
+                user_id=user_id
             )
         
         # Save uploaded PDF
@@ -2033,7 +2076,8 @@ async def get_lumber_items_by_category(category: str):
 )
 async def estimate_lumber_from_pdf(
     file: UploadFile = File(..., description="Architectural PDF file", example="building_plans.pdf"),
-    force_fresh: bool = Form(False, description="Force fresh analysis (ignore cache)")
+    force_fresh: bool = Form(False, description="Force fresh analysis (ignore cache)"),
+    current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     """
     ## Lumber Estimation from PDF 📄
@@ -2123,10 +2167,15 @@ async def estimate_lumber_from_pdf(
         # 🗄️ SAVE TO DATABASE - Create project and save analysis results
         try:
             # Create project in database
+            user_id = current_user.get("id")
+            if not user_id:
+                raise HTTPException(status_code=400, detail="User ID not found in token")
+            
             project_id = project_manager.create_project(
                 name=project_name,
                 description=f"PDF Analysis: {file.filename}",
-                pdf_path=str(pdf_path)  # Store original PDF path for reference
+                pdf_path=str(pdf_path),  # Store original PDF path for reference
+                user_id=user_id
             )
             
             # Calculate total cost from lumber estimates
@@ -2290,8 +2339,13 @@ async def get_all_lumber_items():
 async def get_dashboard_stats(current_user: Dict[str, Any] = Depends(get_current_user)):
     """Get dashboard statistics"""
     try:
+        # Get user's projects only
+        user_id = current_user.get("id")
+        if not user_id:
+            raise HTTPException(status_code=400, detail="User ID not found in token")
+        
         contractors = contractor_profile_manager.search_contractors({})
-        projects = project_manager.get_all_projects()
+        projects = project_manager.get_projects_by_user(user_id)
         
         # Count materials by category
         all_materials = []
@@ -2309,7 +2363,7 @@ async def get_dashboard_stats(current_user: Dict[str, Any] = Depends(get_current
             "total_projects": len(projects),
             "total_materials": len(all_materials),
             "materials_by_category": category_counts,
-            "recent_projects": projects[:5]  # Last 5 projects
+            "recent_projects": projects[:5]  # Last 5 projects (user's only)
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -2445,6 +2499,14 @@ async def validate_project_accuracy(
     - System improvement identification
     """
     try:
+        # Check if user owns this project
+        user_id = current_user.get("id")
+        if not user_id:
+            raise HTTPException(status_code=400, detail="User ID not found in token")
+        
+        if not project_manager.user_owns_project(user_id, project_id):
+            raise HTTPException(status_code=403, detail="Access denied. You can only validate accuracy for your own projects.")
+        
         # Get project details
         project = project_manager.get_project(project_id)
         if not project:
@@ -2757,6 +2819,14 @@ async def submit_project_estimate(
     - Estimate version control
     """
     try:
+        # Check if user owns this project
+        user_id = current_user.get("id")
+        if not user_id:
+            raise HTTPException(status_code=400, detail="User ID not found in token")
+        
+        if not project_manager.user_owns_project(user_id, project_id):
+            raise HTTPException(status_code=403, detail="Access denied. You can only submit estimates for your own projects.")
+        
         # Get current project with all details
         project = project_manager.get_project(project_id, include_manual_items=True)
         if not project:
@@ -2886,6 +2956,14 @@ async def get_project_estimate_history(
     - Project progress tracking
     """
     try:
+        # Check if user owns this project
+        user_id = current_user.get("id")
+        if not user_id:
+            raise HTTPException(status_code=400, detail="User ID not found in token")
+        
+        if not project_manager.user_owns_project(user_id, project_id):
+            raise HTTPException(status_code=403, detail="Access denied. You can only view estimate history for your own projects.")
+        
         # Verify project exists
         project = project_manager.get_project(project_id, include_manual_items=False)
         if not project:

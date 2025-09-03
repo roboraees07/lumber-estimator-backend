@@ -182,9 +182,11 @@ class EnhancedDatabaseManager:
                     status TEXT DEFAULT 'planning', -- planning, active, completed, cancelled
                     client_name TEXT,
                     client_contact TEXT,
+                    user_id INTEGER NOT NULL, -- User who created/owns the project
                     analysis_data TEXT, -- JSON data
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
                 )
             ''')
             
@@ -791,14 +793,33 @@ class ProjectManager:
     def __init__(self, db_manager: EnhancedDatabaseManager):
         self.db = db_manager
     
-    def create_project(self, name: str, description: str = None, pdf_path: str = None) -> int:
+    def create_project(self, name: str, description: str = None, pdf_path: str = None, user_id: int = None) -> int:
         """Create a new project"""
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute('''
-                INSERT INTO projects (name, description, pdf_path)
-                VALUES (?, ?, ?)
-            ''', (name, description, pdf_path))
+            
+            # Check if user_id column exists
+            cursor.execute("PRAGMA table_info(projects)")
+            columns_info = cursor.fetchall()
+            column_names = [col[1] for col in columns_info]
+            
+            if 'user_id' not in column_names:
+                # If user_id column doesn't exist, create project without it for now
+                # This is a temporary fix until the database is migrated
+                print("⚠️ Warning: user_id column not found in projects table. Creating project without user_id.")
+                cursor.execute('''
+                    INSERT INTO projects (name, description, pdf_path)
+                    VALUES (?, ?, ?)
+                ''', (name, description, pdf_path))
+            else:
+                if user_id is None:
+                    raise ValueError("user_id is required to create a project")
+                
+                cursor.execute('''
+                    INSERT INTO projects (name, description, pdf_path, user_id)
+                    VALUES (?, ?, ?, ?)
+                ''', (name, description, pdf_path, user_id))
+            
             conn.commit()
             return cursor.lastrowid
     
@@ -862,6 +883,37 @@ class ProjectManager:
                 projects.append(project)
             return projects
     
+    def get_projects_by_user(self, user_id: int) -> List[Dict]:
+        """Get projects for a specific user"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Check if user_id column exists
+            cursor.execute("PRAGMA table_info(projects)")
+            columns_info = cursor.fetchall()
+            column_names = [col[1] for col in columns_info]
+            
+            if 'user_id' not in column_names:
+                # If user_id column doesn't exist, return all projects for now
+                # This is a temporary fix until the database is migrated
+                print("⚠️ Warning: user_id column not found in projects table. Returning all projects.")
+                cursor.execute('SELECT * FROM projects ORDER BY created_at DESC')
+            else:
+                cursor.execute('SELECT * FROM projects WHERE user_id = ? ORDER BY created_at DESC', (user_id,))
+            
+            rows = cursor.fetchall()
+            columns = [desc[0] for desc in cursor.description]
+            projects = []
+            for row in rows:
+                project = dict(zip(columns, row))
+                if project['analysis_data']:
+                    try:
+                        project['analysis_data'] = json.loads(project['analysis_data'])
+                    except:
+                        project['analysis_data'] = {}
+                projects.append(project)
+            return projects
+    
     def update_project_total_cost(self, project_id: int):
         """Update project total cost to include both PDF analysis and manual items"""
         with self.db.get_connection() as conn:
@@ -901,5 +953,25 @@ class ProjectManager:
             ''', (status, project_id))
             conn.commit()
             return cursor.rowcount > 0
+    
+    def user_owns_project(self, user_id: int, project_id: int) -> bool:
+        """Check if a user owns a specific project"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Check if user_id column exists
+            cursor.execute("PRAGMA table_info(projects)")
+            columns_info = cursor.fetchall()
+            column_names = [col[1] for col in columns_info]
+            
+            if 'user_id' not in column_names:
+                # If user_id column doesn't exist, allow access for now
+                # This is a temporary fix until the database is migrated
+                print("⚠️ Warning: user_id column not found in projects table. Allowing access to all projects.")
+                return True
+            
+            cursor.execute('SELECT COUNT(*) FROM projects WHERE id = ? AND user_id = ?', (project_id, user_id))
+            count = cursor.fetchone()[0]
+            return count > 0
 
 
