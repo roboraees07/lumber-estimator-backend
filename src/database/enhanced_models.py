@@ -19,8 +19,12 @@ class EnhancedDatabaseManager:
         self.init_enhanced_database()
     
     def get_connection(self):
-        """Get database connection"""
-        return sqlite3.connect(self.db_path)
+        """Get database connection with proper settings to prevent locking"""
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        conn.execute("PRAGMA journal_mode=WAL")  # Use WAL mode to prevent locking
+        conn.execute("PRAGMA synchronous=NORMAL")  # Better performance
+        conn.execute("PRAGMA foreign_keys=ON")  # Enable foreign key constraints
+        return conn
     
     def init_enhanced_database(self):
         """Create enhanced database tables for contractor profiling"""
@@ -251,6 +255,47 @@ class EnhancedDatabaseManager:
                     approval_date TIMESTAMP,
                     approved_by TEXT,
                     FOREIGN KEY (project_id) REFERENCES projects (id) ON DELETE CASCADE
+                )
+            ''')
+            
+            # Quotations table for contractor quotations
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS quotations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    quotation_name TEXT,
+                    client_name TEXT,
+                    client_email TEXT,
+                    client_phone TEXT,
+                    project_address TEXT,
+                    project_description TEXT,
+                    total_cost REAL DEFAULT 0,
+                    status TEXT DEFAULT 'draft', -- draft, sent, approved, rejected, completed
+                    valid_until DATE,
+                    notes TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+                )
+            ''')
+            
+            # Quotation items table for items within quotations
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS quotation_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    quotation_id INTEGER NOT NULL,
+                    item_name TEXT NOT NULL,
+                    sku TEXT,
+                    unit TEXT NOT NULL,
+                    unit_of_measure TEXT NOT NULL,
+                    cost REAL NOT NULL,
+                    quantity REAL DEFAULT 1,
+                    total_cost REAL,
+                    description TEXT,
+                    category TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (quotation_id) REFERENCES quotations (id) ON DELETE CASCADE
                 )
             ''')
             
@@ -973,5 +1018,243 @@ class ProjectManager:
             cursor.execute('SELECT COUNT(*) FROM projects WHERE id = ? AND user_id = ?', (project_id, user_id))
             count = cursor.fetchone()[0]
             return count > 0
+
+
+class QuotationManager:
+    def __init__(self, db_manager: EnhancedDatabaseManager):
+        self.db = db_manager
+    
+    def create_quotation(self, user_id: int, quotation_data: Dict[str, Any] = None) -> int:
+        """Create a new quotation for a user"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Create quotation with minimal data (auto-increment ID)
+            cursor.execute('''
+                INSERT INTO quotations (user_id, quotation_name, client_name, client_email, 
+                                      client_phone, project_address, project_description, 
+                                      notes, valid_until)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                user_id,
+                quotation_data.get('quotation_name') if quotation_data else None,
+                quotation_data.get('client_name') if quotation_data else None,
+                quotation_data.get('client_email') if quotation_data else None,
+                quotation_data.get('client_phone') if quotation_data else None,
+                quotation_data.get('project_address') if quotation_data else None,
+                quotation_data.get('project_description') if quotation_data else None,
+                quotation_data.get('notes') if quotation_data else None,
+                quotation_data.get('valid_until') if quotation_data else None
+            ))
+            
+            conn.commit()
+            return cursor.lastrowid
+    
+    def get_quotation(self, quotation_id: int) -> Optional[Dict]:
+        """Get quotation by ID"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM quotations WHERE id = ?', (quotation_id,))
+            row = cursor.fetchone()
+            if row:
+                columns = [desc[0] for desc in cursor.description]
+                return dict(zip(columns, row))
+            return None
+    
+    def get_quotations_by_user(self, user_id: int) -> List[Dict]:
+        """Get all quotations for a user"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT q.*, 
+                       COUNT(qi.id) as item_count,
+                       COALESCE(SUM(qi.total_cost), 0) as calculated_total
+                FROM quotations q
+                LEFT JOIN quotation_items qi ON q.id = qi.quotation_id
+                WHERE q.user_id = ?
+                GROUP BY q.id
+                ORDER BY q.created_at DESC
+            ''', (user_id,))
+            
+            rows = cursor.fetchall()
+            columns = [desc[0] for desc in cursor.description]
+            quotations = []
+            
+            for row in rows:
+                quotation = dict(zip(columns, row))
+                quotations.append(quotation)
+            
+            return quotations
+    
+    def update_quotation(self, quotation_id: int, updates: Dict[str, Any]) -> bool:
+        """Update quotation details"""
+        if not updates:
+            return False
+        
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            set_clause = ', '.join([f"{key} = ?" for key in updates.keys()])
+            values = list(updates.values()) + [quotation_id]
+            
+            cursor.execute(f'''
+                UPDATE quotations 
+                SET {set_clause}, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            ''', values)
+            
+            conn.commit()
+            return cursor.rowcount > 0
+    
+    def delete_quotation(self, quotation_id: int) -> bool:
+        """Delete quotation and all its items"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM quotations WHERE id = ?', (quotation_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+
+
+class QuotationItemManager:
+    def __init__(self, db_manager: EnhancedDatabaseManager):
+        self.db = db_manager
+    
+    def add_item_to_quotation(self, quotation_id: int, item_data: Dict[str, Any]) -> int:
+        """Add an item to a quotation"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Calculate total cost
+            quantity = item_data.get('quantity', 1)
+            cost = item_data.get('cost', 0)
+            total_cost = quantity * cost
+            
+            cursor.execute('''
+                INSERT INTO quotation_items (
+                    quotation_id, item_name, sku, unit, unit_of_measure, 
+                    cost, quantity, total_cost, description, category
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                quotation_id,
+                item_data['item_name'],
+                item_data.get('sku'),
+                item_data.get('unit', 'each'),
+                item_data['unit_of_measure'],
+                cost,
+                quantity,
+                total_cost,
+                item_data.get('description'),
+                item_data.get('category')
+            ))
+            
+            # Update quotation total cost
+            self._update_quotation_total_cost(quotation_id, conn)
+            
+            conn.commit()
+            return cursor.lastrowid
+    
+    def get_items_by_quotation(self, quotation_id: int) -> List[Dict]:
+        """Get all items for a quotation"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT * FROM quotation_items 
+                WHERE quotation_id = ? 
+                ORDER BY created_at ASC
+            ''', (quotation_id,))
+            
+            rows = cursor.fetchall()
+            columns = [desc[0] for desc in cursor.description]
+            items = []
+            
+            for row in rows:
+                item = dict(zip(columns, row))
+                # Return N/A for empty SKU
+                if not item['sku']:
+                    item['sku'] = 'N/A'
+                items.append(item)
+            
+            return items
+    
+    def update_item(self, item_id: int, updates: Dict[str, Any]) -> bool:
+        """Update quotation item"""
+        if not updates:
+            return False
+        
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # If cost or quantity is being updated, recalculate total_cost
+            if 'cost' in updates or 'quantity' in updates:
+                # Get current values
+                cursor.execute('SELECT cost, quantity FROM quotation_items WHERE id = ?', (item_id,))
+                current = cursor.fetchone()
+                if current:
+                    current_cost = updates.get('cost', current[0])
+                    current_quantity = updates.get('quantity', current[1])
+                    updates['total_cost'] = current_cost * current_quantity
+            
+            set_clause = ', '.join([f"{key} = ?" for key in updates.keys()])
+            values = list(updates.values()) + [item_id]
+            
+            cursor.execute(f'''
+                UPDATE quotation_items 
+                SET {set_clause}, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            ''', values)
+            
+            if cursor.rowcount > 0:
+                # Get quotation_id to update total
+                cursor.execute('SELECT quotation_id FROM quotation_items WHERE id = ?', (item_id,))
+                result = cursor.fetchone()
+                if result:
+                    self._update_quotation_total_cost(result[0], conn)
+            
+            conn.commit()
+            return cursor.rowcount > 0
+    
+    def delete_item(self, item_id: int) -> bool:
+        """Delete quotation item"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Get quotation_id before deleting
+            cursor.execute('SELECT quotation_id FROM quotation_items WHERE id = ?', (item_id,))
+            result = cursor.fetchone()
+            
+            cursor.execute('DELETE FROM quotation_items WHERE id = ?', (item_id,))
+            
+            if cursor.rowcount > 0 and result:
+                # Update quotation total cost
+                self._update_quotation_total_cost(result[0], conn)
+            
+            conn.commit()
+            return cursor.rowcount > 0
+    
+    def _update_quotation_total_cost(self, quotation_id: int, conn=None):
+        """Update quotation total cost based on items"""
+        if conn is None:
+            with self.db.get_connection() as new_conn:
+                cursor = new_conn.cursor()
+                cursor.execute('''
+                    UPDATE quotations 
+                    SET total_cost = (
+                        SELECT COALESCE(SUM(total_cost), 0) 
+                        FROM quotation_items 
+                        WHERE quotation_id = ?
+                    ), updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                ''', (quotation_id, quotation_id))
+                new_conn.commit()
+        else:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE quotations 
+                SET total_cost = (
+                    SELECT COALESCE(SUM(total_cost), 0) 
+                    FROM quotation_items 
+                    WHERE quotation_id = ?
+                ), updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            ''', (quotation_id, quotation_id))
 
 

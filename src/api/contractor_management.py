@@ -14,12 +14,14 @@ import shutil
 import os
 from datetime import datetime, date
 
-from ..database.enhanced_models import EnhancedDatabaseManager, ContractorProfileManager, MaterialItemManager
+from ..database.enhanced_models import EnhancedDatabaseManager, ContractorProfileManager, MaterialItemManager, QuotationManager, QuotationItemManager
 
 # Initialize enhanced database and managers
 enhanced_db = EnhancedDatabaseManager()
 contractor_profile_manager = ContractorProfileManager(enhanced_db)
 material_item_manager = MaterialItemManager(enhanced_db)
+quotation_manager = QuotationManager(enhanced_db)
+quotation_item_manager = QuotationItemManager(enhanced_db)
 
 # Create router for contractor management
 router = APIRouter(prefix="/contractors", tags=["contractor-management"])
@@ -240,6 +242,51 @@ class ContractorReview(BaseModel):
     service_rating: Optional[int] = Field(None, ge=1, le=5)
     reviewer_name: Optional[str] = None
     order_date: Optional[date] = None
+
+# Quotation and Item Models
+class QuotationItemCreate(BaseModel):
+    item_name: str = Field(..., description="Name of the item", example="Premium Oak Flooring")
+    sku: Optional[str] = Field(None, description="SKU/Product Code (optional)", example="OAK-PREM-001")
+    unit: str = Field(..., description="Unit of measure", example="per sq ft")
+    unit_of_measure: str = Field(..., description="Unit of measure description", example="per sq ft, per piece, per hour")
+    cost: float = Field(..., description="Cost per unit", example=12.50)
+    quantity: Optional[float] = Field(1, description="Quantity", example=100)
+    description: Optional[str] = Field(None, description="Item description")
+    category: Optional[str] = Field(None, description="Item category")
+
+class QuotationItemResponse(BaseModel):
+    item_id: int
+    item_name: str
+    sku_id: str  # Will be "N/A" if not provided
+    unit: str
+    unit_of_measure: str
+    cost: float
+    quantity: float
+    total_cost: float
+    description: Optional[str]
+    category: Optional[str]
+
+class QuotationCreate(BaseModel):
+    quotation_name: Optional[str] = Field(None, description="Name of the quotation")
+    client_name: Optional[str] = Field(None, description="Client name")
+    client_email: Optional[str] = Field(None, description="Client email")
+    client_phone: Optional[str] = Field(None, description="Client phone")
+    project_address: Optional[str] = Field(None, description="Project address")
+    project_description: Optional[str] = Field(None, description="Project description")
+    notes: Optional[str] = Field(None, description="Additional notes")
+    valid_until: Optional[date] = Field(None, description="Quotation valid until date")
+    items: List[QuotationItemCreate] = Field(..., description="List of items to add to quotation")
+
+class QuotationResponse(BaseModel):
+    quotation_id: int
+    user_id: int
+    quotation_name: Optional[str]
+    client_name: Optional[str]
+    total_cost: float
+    status: str
+    item_count: int
+    created_at: str
+    updated_at: str
 
 # Enhanced Contractor Profile Endpoints
 @router.post(
@@ -754,5 +801,400 @@ async def get_contractor_reviews(contractor_id: int, limit: int = Query(10), off
             reviews = [dict(zip(columns, row)) for row in rows]
             
             return {"reviews": reviews}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Quotation Management Endpoints
+@router.post(
+    "/quotations/create",
+    response_model=dict,
+    summary="📋 Create First Quotation",
+    description="Create a new quotation with items for a user. Auto-assigns quotation ID and item IDs.",
+    response_description="Quotation created successfully with items",
+    responses={
+        200: {
+            "description": "Quotation created successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "quotation_id": 123,
+                        "message": "Quotation created successfully",
+                        "items": [
+                            {
+                                "item_id": 456,
+                                "item_name": "Premium Oak Flooring",
+                                "sku_id": "OAK-PREM-001",
+                                "unit": "per sq ft",
+                                "unit_of_measure": "per sq ft",
+                                "cost": 12.50,
+                                "quantity": 100,
+                                "total_cost": 1250.00
+                            }
+                        ]
+                    }
+                }
+            }
+        },
+        400: {
+            "description": "Invalid input data",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "detail": "Items list cannot be empty"
+                    }
+                }
+            }
+        }
+    }
+)
+async def create_first_quotation(
+    user_id: int = Query(..., description="User ID who is creating the quotation"),
+    quotation_data: QuotationCreate = None
+):
+    """
+    ## Create First Quotation 📋
+    
+    Create a new quotation with items for a user. This endpoint:
+    - Auto-assigns a quotation ID
+    - Auto-assigns item IDs for each item
+    - Takes item details (name, SKU, unit, unit of measure, cost)
+    - Returns item details with assigned IDs
+    
+    **Required Fields:**
+    - `user_id`: User creating the quotation
+    - `items`: List of items to add to quotation
+    
+    **Item Fields:**
+    - `item_name`: Name of the item (required)
+    - `sku`: SKU/Product Code (optional, returns "N/A" if not provided)
+    - `unit`: Unit of measure (required)
+    - `unit_of_measure`: Unit description (required)
+    - `cost`: Cost per unit (required)
+    - `quantity`: Quantity (optional, defaults to 1)
+    
+    **Response Format:**
+    - `quotation_id`: Auto-assigned quotation ID
+    - `items`: Array of items with assigned IDs and details
+    
+    **Example Use Cases:**
+    - Creating first quotation from dashboard
+    - Adding multiple items to a new quotation
+    - Setting up contractor pricing for clients
+    """
+    try:
+        if not quotation_data or not quotation_data.items:
+            raise HTTPException(status_code=400, detail="Items list cannot be empty")
+        
+        # Create quotation
+        quotation_id = quotation_manager.create_quotation(
+            user_id, 
+            quotation_data.dict() if quotation_data else None
+        )
+        
+        # Add items to quotation
+        created_items = []
+        for item in quotation_data.items:
+            item_id = quotation_item_manager.add_item_to_quotation(
+                quotation_id, 
+                item.dict()
+            )
+            
+            # Get the created item with all details
+            items = quotation_item_manager.get_items_by_quotation(quotation_id)
+            created_item = next((i for i in items if i['id'] == item_id), None)
+            
+            if created_item:
+                created_items.append({
+                    "item_id": created_item['id'],
+                    "item_name": created_item['item_name'],
+                    "sku_id": created_item['sku'],
+                    "unit": created_item['unit'],
+                    "unit_of_measure": created_item['unit_of_measure'],
+                    "cost": created_item['cost'],
+                    "quantity": created_item['quantity'],
+                    "total_cost": created_item['total_cost']
+                })
+        
+        return {
+            "quotation_id": quotation_id,
+            "message": "Quotation created successfully",
+            "items": created_items
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get(
+    "/quotations/{quotation_id}/items",
+    response_model=dict,
+    summary="📦 Get Quotation Items",
+    description="Get all items from a specific quotation ID",
+    response_description="List of items in the quotation",
+    responses={
+        200: {
+            "description": "Items retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "quotation_id": 123,
+                        "items": [
+                            {
+                                "item_id": 456,
+                                "item_name": "Premium Oak Flooring",
+                                "sku_id": "OAK-PREM-001",
+                                "unit": "per sq ft",
+                                "unit_of_measure": "per sq ft",
+                                "cost": 12.50,
+                                "quantity": 100,
+                                "total_cost": 1250.00
+                            }
+                        ],
+                        "total_items": 1,
+                        "total_cost": 1250.00
+                    }
+                }
+            }
+        },
+        404: {
+            "description": "Quotation not found",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "detail": "Quotation not found"
+                    }
+                }
+            }
+        }
+    }
+)
+async def get_quotation_items(quotation_id: int):
+    """
+    ## Get Quotation Items 📦
+    
+    Retrieve all items from a specific quotation.
+    
+    **Response includes:**
+    - `item_id`: Auto-assigned item ID
+    - `item_name`: Name of the item
+    - `sku_id`: SKU/Product Code (or "N/A" if not provided)
+    - `unit`: Unit of measure
+    - `unit_of_measure`: Unit description
+    - `cost`: Cost per unit
+    - `quantity`: Quantity
+    - `total_cost`: Total cost for this item
+    - `total_items`: Total number of items
+    - `total_cost`: Total cost of all items
+    """
+    try:
+        # Verify quotation exists
+        quotation = quotation_manager.get_quotation(quotation_id)
+        if not quotation:
+            raise HTTPException(status_code=404, detail="Quotation not found")
+        
+        # Get items
+        items = quotation_item_manager.get_items_by_quotation(quotation_id)
+        
+        # Format response
+        formatted_items = []
+        total_cost = 0
+        
+        for item in items:
+            formatted_items.append({
+                "item_id": item['id'],
+                "item_name": item['item_name'],
+                "sku_id": item['sku'],
+                "unit": item['unit'],
+                "unit_of_measure": item['unit_of_measure'],
+                "cost": item['cost'],
+                "quantity": item['quantity'],
+                "total_cost": item['total_cost']
+            })
+            total_cost += item['total_cost']
+        
+        return {
+            "quotation_id": quotation_id,
+            "items": formatted_items,
+            "total_items": len(formatted_items),
+            "total_cost": total_cost
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post(
+    "/quotations/{quotation_id}/items",
+    response_model=dict,
+    summary="➕ Add Item to Quotation",
+    description="Add a new item to an existing quotation",
+    response_description="Item added successfully",
+    responses={
+        200: {
+            "description": "Item added successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "item_id": 789,
+                        "message": "Item added to quotation successfully",
+                        "item": {
+                            "item_id": 789,
+                            "item_name": "Steel Beams",
+                            "sku_id": "N/A",
+                            "unit": "per piece",
+                            "unit_of_measure": "per piece",
+                            "cost": 150.00,
+                            "quantity": 5,
+                            "total_cost": 750.00
+                        }
+                    }
+                }
+            }
+        },
+        404: {
+            "description": "Quotation not found",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "detail": "Quotation not found"
+                    }
+                }
+            }
+        }
+    }
+)
+async def add_item_to_quotation(quotation_id: int, item: QuotationItemCreate):
+    """
+    ## Add Item to Quotation ➕
+    
+    Add a new item to an existing quotation.
+    
+    **Required Fields:**
+    - `item_name`: Name of the item
+    - `unit`: Unit of measure
+    - `unit_of_measure`: Unit description
+    - `cost`: Cost per unit
+    
+    **Optional Fields:**
+    - `sku`: SKU/Product Code (returns "N/A" if not provided)
+    - `quantity`: Quantity (defaults to 1)
+    - `description`: Item description
+    - `category`: Item category
+    
+    **Response includes:**
+    - `item_id`: Auto-assigned item ID
+    - Complete item details with calculated total cost
+    """
+    try:
+        # Verify quotation exists
+        quotation = quotation_manager.get_quotation(quotation_id)
+        if not quotation:
+            raise HTTPException(status_code=404, detail="Quotation not found")
+        
+        # Add item
+        item_id = quotation_item_manager.add_item_to_quotation(
+            quotation_id, 
+            item.dict()
+        )
+        
+        # Get the created item
+        items = quotation_item_manager.get_items_by_quotation(quotation_id)
+        created_item = next((i for i in items if i['id'] == item_id), None)
+        
+        if created_item:
+            formatted_item = {
+                "item_id": created_item['id'],
+                "item_name": created_item['item_name'],
+                "sku_id": created_item['sku'],
+                "unit": created_item['unit'],
+                "unit_of_measure": created_item['unit_of_measure'],
+                "cost": created_item['cost'],
+                "quantity": created_item['quantity'],
+                "total_cost": created_item['total_cost']
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to retrieve created item")
+        
+        return {
+            "item_id": item_id,
+            "message": "Item added to quotation successfully",
+            "item": formatted_item
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get(
+    "/quotations/user/{user_id}",
+    response_model=dict,
+    summary="📋 Get User Quotations",
+    description="Get all quotations linked with a specific user ID",
+    response_description="List of user's quotations",
+    responses={
+        200: {
+            "description": "Quotations retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "user_id": 1,
+                        "quotations": [
+                            {
+                                "quotation_id": 123,
+                                "quotation_name": "Office Renovation",
+                                "client_name": "ABC Corp",
+                                "total_cost": 1250.00,
+                                "status": "draft",
+                                "item_count": 3,
+                                "created_at": "2024-01-15T10:30:00",
+                                "updated_at": "2024-01-15T10:30:00"
+                            }
+                        ],
+                        "total_quotations": 1
+                    }
+                }
+            }
+        }
+    }
+)
+async def get_user_quotations(user_id: int):
+    """
+    ## Get User Quotations 📋
+    
+    Retrieve all quotations for a specific user.
+    
+    **Response includes:**
+    - `quotation_id`: Quotation ID
+    - `quotation_name`: Name of the quotation
+    - `client_name`: Client name
+    - `total_cost`: Total cost of quotation
+    - `status`: Quotation status (draft, sent, approved, etc.)
+    - `item_count`: Number of items in quotation
+    - `created_at`: Creation timestamp
+    - `updated_at`: Last update timestamp
+    - `total_quotations`: Total number of quotations
+    """
+    try:
+        quotations = quotation_manager.get_quotations_by_user(user_id)
+        
+        # Format response
+        formatted_quotations = []
+        for quotation in quotations:
+            formatted_quotations.append({
+                "quotation_id": quotation['id'],
+                "quotation_name": quotation.get('quotation_name'),
+                "client_name": quotation.get('client_name'),
+                "total_cost": quotation.get('total_cost', 0),
+                "status": quotation.get('status', 'draft'),
+                "item_count": quotation.get('item_count', 0),
+                "created_at": quotation.get('created_at'),
+                "updated_at": quotation.get('updated_at')
+            })
+        
+        return {
+            "user_id": user_id,
+            "quotations": formatted_quotations,
+            "total_quotations": len(formatted_quotations)
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
