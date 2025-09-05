@@ -817,20 +817,23 @@ async def get_contractor_reviews(contractor_id: int, limit: int = Query(10), off
             "content": {
                 "application/json": {
                     "example": {
-                        "quotation_id": 123,
+                        "success": True,
                         "message": "Quotation created successfully",
-                        "items": [
-                            {
-                                "item_id": 456,
-                                "item_name": "Premium Oak Flooring",
-                                "sku_id": "OAK-PREM-001",
-                                "unit": "per sq ft",
-                                "unit_of_measure": "per sq ft",
-                                "cost": 12.50,
-                                "quantity": 100,
-                                "total_cost": 1250.00
-                            }
-                        ]
+                        "data": {
+                            "quotation_id": 123,
+                            "items": [
+                                {
+                                    "item_id": 456,
+                                    "item_name": "Premium Oak Flooring",
+                                    "sku_id": "OAK-PREM-001",
+                                    "unit": "per sq ft",
+                                    "unit_of_measure": "per sq ft",
+                                    "cost": 12.50,
+                                    "quantity": 100,
+                                    "total_cost": 1250.00
+                                }
+                            ]
+                        }
                     }
                 }
             }
@@ -840,6 +843,8 @@ async def get_contractor_reviews(contractor_id: int, limit: int = Query(10), off
             "content": {
                 "application/json": {
                     "example": {
+                        "success": False,
+                        "message": "Items list cannot be empty",
                         "detail": "Items list cannot be empty"
                     }
                 }
@@ -916,9 +921,12 @@ async def create_first_quotation(
                 })
         
         return {
-            "quotation_id": quotation_id,
+            "success": True,
             "message": "Quotation created successfully",
-            "items": created_items
+            "data": {
+                "quotation_id": quotation_id,
+                "items": created_items
+            }
         }
     except HTTPException:
         raise
@@ -937,21 +945,25 @@ async def create_first_quotation(
             "content": {
                 "application/json": {
                     "example": {
-                        "quotation_id": 123,
-                        "items": [
-                            {
-                                "item_id": 456,
-                                "item_name": "Premium Oak Flooring",
-                                "sku_id": "OAK-PREM-001",
-                                "unit": "per sq ft",
-                                "unit_of_measure": "per sq ft",
-                                "cost": 12.50,
-                                "quantity": 100,
-                                "total_cost": 1250.00
-                            }
-                        ],
-                        "total_items": 1,
-                        "total_cost": 1250.00
+                        "success": True,
+                        "message": "Items retrieved successfully",
+                        "data": {
+                            "quotation_id": 123,
+                            "items": [
+                                {
+                                    "item_id": 456,
+                                    "item_name": "Premium Oak Flooring",
+                                    "sku_id": "OAK-PREM-001",
+                                    "unit": "per sq ft",
+                                    "unit_of_measure": "per sq ft",
+                                    "cost": 12.50,
+                                    "quantity": 100,
+                                    "total_cost": 1250.00
+                                }
+                            ],
+                            "total_items": 1,
+                            "total_cost": 1250.00
+                        }
                     }
                 }
             }
@@ -961,6 +973,8 @@ async def create_first_quotation(
             "content": {
                 "application/json": {
                     "example": {
+                        "success": False,
+                        "message": "Quotation not found",
                         "detail": "Quotation not found"
                     }
                 }
@@ -1013,10 +1027,14 @@ async def get_quotation_items(quotation_id: int):
             total_cost += item['total_cost']
         
         return {
-            "quotation_id": quotation_id,
-            "items": formatted_items,
-            "total_items": len(formatted_items),
-            "total_cost": total_cost
+            "success": True,
+            "message": "Items retrieved successfully",
+            "data": {
+                "quotation_id": quotation_id,
+                "items": formatted_items,
+                "total_items": len(formatted_items),
+                "total_cost": total_cost
+            }
         }
     except HTTPException:
         raise
@@ -1035,17 +1053,20 @@ async def get_quotation_items(quotation_id: int):
             "content": {
                 "application/json": {
                     "example": {
-                        "item_id": 789,
+                        "success": True,
                         "message": "Item added to quotation successfully",
-                        "item": {
+                        "data": {
                             "item_id": 789,
-                            "item_name": "Steel Beams",
-                            "sku_id": "N/A",
-                            "unit": "per piece",
-                            "unit_of_measure": "per piece",
-                            "cost": 150.00,
-                            "quantity": 5,
-                            "total_cost": 750.00
+                            "item": {
+                                "item_id": 789,
+                                "item_name": "Steel Beams",
+                                "sku_id": "N/A",
+                                "unit": "per piece",
+                                "unit_of_measure": "per piece",
+                                "cost": 150.00,
+                                "quantity": 5,
+                                "total_cost": 750.00
+                            }
                         }
                     }
                 }
@@ -1056,6 +1077,8 @@ async def get_quotation_items(quotation_id: int):
             "content": {
                 "application/json": {
                     "example": {
+                        "success": False,
+                        "message": "Quotation not found",
                         "detail": "Quotation not found"
                     }
                 }
@@ -1116,9 +1139,12 @@ async def add_item_to_quotation(quotation_id: int, item: QuotationItemCreate):
             raise HTTPException(status_code=500, detail="Failed to retrieve created item")
         
         return {
-            "item_id": item_id,
+            "success": True,
             "message": "Item added to quotation successfully",
-            "item": formatted_item
+            "data": {
+                "item_id": item_id,
+                "item": formatted_item
+            }
         }
     except HTTPException:
         raise
@@ -1137,20 +1163,24 @@ async def add_item_to_quotation(quotation_id: int, item: QuotationItemCreate):
             "content": {
                 "application/json": {
                     "example": {
-                        "user_id": 1,
-                        "quotations": [
-                            {
-                                "quotation_id": 123,
-                                "quotation_name": "Office Renovation",
-                                "client_name": "ABC Corp",
-                                "total_cost": 1250.00,
-                                "status": "draft",
-                                "item_count": 3,
-                                "created_at": "2024-01-15T10:30:00",
-                                "updated_at": "2024-01-15T10:30:00"
-                            }
-                        ],
-                        "total_quotations": 1
+                        "success": True,
+                        "message": "User quotations retrieved successfully",
+                        "data": {
+                            "user_id": 1,
+                            "quotations": [
+                                {
+                                    "quotation_id": 123,
+                                    "quotation_name": "Office Renovation",
+                                    "client_name": "ABC Corp",
+                                    "total_cost": 1250.00,
+                                    "status": "draft",
+                                    "item_count": 3,
+                                    "created_at": "2024-01-15T10:30:00",
+                                    "updated_at": "2024-01-15T10:30:00"
+                                }
+                            ],
+                            "total_quotations": 1
+                        }
                     }
                 }
             }
@@ -1192,9 +1222,13 @@ async def get_user_quotations(user_id: int):
             })
         
         return {
-            "user_id": user_id,
-            "quotations": formatted_quotations,
-            "total_quotations": len(formatted_quotations)
+            "success": True,
+            "message": "User quotations retrieved successfully",
+            "data": {
+                "user_id": user_id,
+                "quotations": formatted_quotations,
+                "total_quotations": len(formatted_quotations)
+            }
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
