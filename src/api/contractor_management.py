@@ -284,9 +284,6 @@ class SimpleQuotationItem(BaseModel):
     unit: str = Field(..., description="Unit of measure")
     unit_of_measure: str = Field(..., description="Unit description")
     cost: float = Field(..., description="Cost per unit")
-    quantity: float = Field(1, description="Quantity")
-    description: Optional[str] = Field(None, description="Item description")
-    category: Optional[str] = Field(None, description="Item category")
 
 class QuotationResponse(BaseModel):
     quotation_id: int
@@ -840,9 +837,7 @@ async def get_contractor_reviews(contractor_id: int, limit: int = Query(10), off
                                 "unit_of_measure": "per sq ft",
                                 "cost": 12.50,
                                 "quantity": 1,
-                                "total_cost": 12.50,
-                                "description": "string",
-                                "category": "string"
+                                "total_cost": 12.50
                             }
                         }
                     }
@@ -881,9 +876,6 @@ async def create_quotation_item(
     
     **Optional Fields:**
     - `sku`: SKU/Product Code
-    - `quantity`: Quantity (defaults to 1)
-    - `description`: Item description
-    - `category`: Item category
     
     **Response Format:**
     - `quotation_id`: Auto-assigned quotation ID
@@ -901,10 +893,15 @@ async def create_quotation_item(
         # Create quotation with minimal data
         quotation_id = quotation_manager.create_quotation(user_id, None)
         
-        # Add single item to quotation
+        # Add single item to quotation with default values for missing fields
+        item_dict = item_data.dict()
+        item_dict['quantity'] = 1  # Default quantity
+        item_dict['description'] = None  # Default description
+        item_dict['category'] = None  # Default category
+        
         item_id = quotation_item_manager.add_item_to_quotation(
             quotation_id, 
-            item_data.dict()
+            item_dict
         )
         
         # Get the created item with all details
