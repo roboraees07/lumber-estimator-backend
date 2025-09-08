@@ -235,10 +235,146 @@ async def approve_user_account(
 #     # This would need to be implemented in the auth manager
 #     # For now, return a placeholder
 #     return {"message": "User list endpoint - to be implemented"}
-@router.get("/users", response_model=List[Dict[str, Any]])
-async def get_all_users(admin_user: Dict[str, Any] = Depends(get_admin_user)):
-    """Get all users (Admin only)"""
-    return auth_manager.get_all_users()
+@router.get("/users", response_model=Dict[str, Any])
+async def get_all_users(
+    search: Optional[str] = None,
+    role: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+    admin_user: Dict[str, Any] = Depends(get_admin_user)
+):
+    """Get all users with filtering and pagination (Admin only) - excludes admin users"""
+    try:
+        result = auth_manager.get_users_with_filters(
+            search=search,
+            role=role,
+            status=status,
+            limit=limit,
+            offset=offset
+        )
+        
+        return {
+            "success": True,
+            "message": "Users retrieved successfully",
+            "data": result
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/users/{user_id}", response_model=Dict[str, Any])
+async def get_user_details(
+    user_id: int,
+    admin_user: Dict[str, Any] = Depends(get_admin_user)
+):
+    """Get detailed information about a specific user (Admin only)"""
+    try:
+        user = auth_manager.get_user_by_id(user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Format user data for admin view
+        formatted_user = {
+            'id': user['id'],
+            'username': user['username'],
+            'email': user['email'],
+            'role': user['role'].title(),
+            'status': user['account_status'].title(),
+            'first_name': user.get('first_name'),
+            'last_name': user.get('last_name'),
+            'phone': user.get('phone'),
+            'company_name': user.get('company_name'),
+            'business_license': user.get('business_license'),
+            'address': user.get('address'),
+            'city': user.get('city'),
+            'state': user.get('state'),
+            'zip_code': user.get('zip_code'),
+            'profile_completed': user.get('profile_completed', False),
+            'created_at': user['created_at'],
+            'updated_at': user.get('updated_at'),
+            'last_login': user.get('last_login'),
+            'approved_by': user.get('approved_by'),
+            'approved_at': user.get('approved_at'),
+            'rejection_reason': user.get('rejection_reason')
+        }
+        
+        return {
+            "success": True,
+            "message": "User details retrieved successfully",
+            "data": formatted_user
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.put("/users/{user_id}/approve", response_model=Dict[str, Any])
+async def approve_user(
+    user_id: int,
+    admin_user: Dict[str, Any] = Depends(get_admin_user)
+):
+    """Approve a user account (Admin only)"""
+    try:
+        success = auth_manager.approve_user(user_id, admin_user['id'])
+        if not success:
+            raise HTTPException(status_code=404, detail="User not found or already approved")
+        
+        return {
+            "success": True,
+            "message": "User approved successfully",
+            "data": {"user_id": user_id, "status": "approved"}
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.put("/users/{user_id}/reject", response_model=Dict[str, Any])
+async def reject_user(
+    user_id: int,
+    rejection_reason: Optional[str] = None,
+    admin_user: Dict[str, Any] = Depends(get_admin_user)
+):
+    """Reject a user account (Admin only)"""
+    try:
+        success = auth_manager.reject_user(user_id, admin_user['id'], rejection_reason)
+        if not success:
+            raise HTTPException(status_code=404, detail="User not found or already processed")
+        
+        return {
+            "success": True,
+            "message": "User rejected successfully",
+            "data": {"user_id": user_id, "status": "rejected", "rejection_reason": rejection_reason}
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/users/{user_id}", response_model=Dict[str, Any])
+async def delete_user(
+    user_id: int,
+    admin_user: Dict[str, Any] = Depends(get_admin_user)
+):
+    """Delete a user account (Admin only)"""
+    try:
+        # Prevent admin from deleting themselves
+        if user_id == admin_user['id']:
+            raise HTTPException(status_code=400, detail="Cannot delete your own account")
+        
+        success = auth_manager.delete_user(user_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        return {
+            "success": True,
+            "message": "User deleted successfully",
+            "data": {"user_id": user_id}
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/logout", response_model=Dict[str, Any])
 async def logout_user(current_user: Dict[str, Any] = Depends(get_current_user)):

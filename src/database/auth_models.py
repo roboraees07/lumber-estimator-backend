@@ -122,6 +122,31 @@ class UserAuthManager:
         self.auth_db = auth_db
         self.secret_key = auth_db.secret_key
     
+    def _format_date(self, date_value) -> str:
+        """Helper method to format date values from SQLite"""
+        if not date_value:
+            return ''
+        
+        try:
+            from datetime import datetime
+            # SQLite returns datetime as string, so parse it first
+            if isinstance(date_value, str):
+                # Handle different datetime formats
+                date_str = str(date_value)
+                if 'T' in date_str:
+                    # ISO format: 2024-01-15T10:30:00
+                    dt = datetime.fromisoformat(date_str.replace('Z', ''))
+                else:
+                    # SQLite format: 2024-01-15 10:30:00
+                    dt = datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S')
+                return dt.strftime('%d %b. %Y')
+            else:
+                # If it's already a datetime object
+                return date_value.strftime('%d %b. %Y')
+        except (ValueError, AttributeError, TypeError):
+            # Fallback: just use the date part of the string
+            return str(date_value)[:10]
+    
     def hash_password(self, password: str) -> str:
         """Hash password using bcrypt"""
         return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
@@ -360,16 +385,137 @@ class UserAuthManager:
             return cursor.rowcount > 0
 
     def get_all_users(self) -> List[Dict]:
-        """Get a list of all users"""
+        """Get a list of all users (excluding admin users)"""
         with self.auth_db.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT id, username, email, role, account_status, first_name, last_name,
                     company_name, profile_completed, created_at, last_login
                 FROM users
+                WHERE role != 'admin'
                 ORDER BY created_at DESC
             ''')
 
             rows = cursor.fetchall()
             columns = [desc[0] for desc in cursor.description]
             return [dict(zip(columns, row)) for row in rows]
+    
+    def get_users_with_filters(
+        self, 
+        search: Optional[str] = None,
+        role: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0
+    ) -> Dict[str, Any]:
+        """Get users with filtering, search, and pagination"""
+        with self.auth_db.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Build the base query - exclude admin users
+            base_query = '''
+                SELECT id, username, email, role, account_status, first_name, last_name,
+                    company_name, profile_completed, created_at, last_login
+                FROM users
+                WHERE role != 'admin'
+            '''
+            
+            # Build count query for total - exclude admin users
+            count_query = 'SELECT COUNT(*) FROM users WHERE role != \'admin\''
+            
+            params = []
+            
+            # Add search filter (name or email)
+            if search:
+                search_param = f'%{search}%'
+                base_query += ' AND (first_name LIKE ? OR last_name LIKE ? OR email LIKE ? OR username LIKE ?)'
+                count_query += ' AND (first_name LIKE ? OR last_name LIKE ? OR email LIKE ? OR username LIKE ?)'
+                params.extend([search_param, search_param, search_param, search_param])
+            
+            # Add role filter (exclude admin from filter options)
+            if role and role.lower() in ['contractor', 'estimator']:
+                base_query += ' AND role = ?'
+                count_query += ' AND role = ?'
+                params.append(role.lower())
+            
+            # Add status filter
+            if status and status.lower() in ['pending', 'approved', 'rejected', 'suspended']:
+                base_query += ' AND account_status = ?'
+                count_query += ' AND account_status = ?'
+                params.append(status.lower())
+            
+            # Add ordering and pagination
+            base_query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?'
+            
+            # Get total count
+            cursor.execute(count_query, params)
+            total_count = cursor.fetchone()[0]
+            
+            # Get paginated results
+            cursor.execute(base_query, params + [limit, offset])
+            rows = cursor.fetchall()
+            columns = [desc[0] for desc in cursor.description]
+            
+            users = []
+            for row in rows:
+                user = dict(zip(columns, row))
+                # Format the user data for the frontend
+                formatted_user = {
+                    'id': user['id'],
+                    'user_name': f"{user.get('first_name', '')} {user.get('last_name', '')}".strip() or user['username'],
+                    'email': user['email'],
+                    'date': self._format_date(user['created_at']),
+                    'role': user['role'].title(),
+                    'status': user['account_status'].title(),
+                    'profile_picture_url': None,  # Could be added later
+                    'username': user['username'],
+                    'company_name': user.get('company_name'),
+                    'profile_completed': user.get('profile_completed', False),
+                    'last_login': user.get('last_login')
+                }
+                users.append(formatted_user)
+            
+            return {
+                'users': users,
+                'total_count': total_count,
+                'limit': limit,
+                'offset': offset,
+                'has_more': offset + len(users) < total_count
+            }
+    
+    def approve_user(self, user_id: int, approved_by: int) -> bool:
+        """Approve a user account"""
+        with self.auth_db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE users 
+                SET account_status = 'approved', approved_by = ?, approved_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND account_status = 'pending'
+            ''', (approved_by, user_id))
+            
+            conn.commit()
+            return cursor.rowcount > 0
+    
+    def reject_user(self, user_id: int, rejected_by: int, rejection_reason: str = None) -> bool:
+        """Reject a user account"""
+        with self.auth_db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE users 
+                SET account_status = 'rejected', approved_by = ?, approved_at = CURRENT_TIMESTAMP,
+                    rejection_reason = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND account_status = 'pending'
+            ''', (rejected_by, rejection_reason, user_id))
+            
+            conn.commit()
+            return cursor.rowcount > 0
+    
+    def delete_user(self, user_id: int) -> bool:
+        """Delete a user account"""
+        with self.auth_db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM users WHERE id = ?', (user_id,))
+            
+            conn.commit()
+            return cursor.rowcount > 0
