@@ -1160,7 +1160,7 @@ async def add_item_to_quotation(quotation_id: int, item: QuotationItemCreate):
     "/quotations/user/{user_id}",
     response_model=dict,
     summary="📋 Get User Quotations",
-    description="Get all quotations linked with a specific user ID",
+    description="Get all quotations linked with a specific user ID with optional status filter",
     response_description="List of user's quotations",
     responses={
         200: {
@@ -1178,13 +1178,15 @@ async def add_item_to_quotation(quotation_id: int, item: QuotationItemCreate):
                                     "quotation_name": "Office Renovation",
                                     "client_name": "ABC Corp",
                                     "total_cost": 1250.00,
-                                    "status": "draft",
+                                    "status": "pending",
                                     "item_count": 3,
+                                    "skus": ["OAK-PREM-001", "STEEL-001", "NAIL-500"],
                                     "created_at": "2024-01-15T10:30:00",
                                     "updated_at": "2024-01-15T10:30:00"
                                 }
                             ],
-                            "total_quotations": 1
+                            "total_quotations": 1,
+                            "status_filter": "pending"
                         }
                     }
                 }
@@ -1192,25 +1194,41 @@ async def add_item_to_quotation(quotation_id: int, item: QuotationItemCreate):
         }
     }
 )
-async def get_user_quotations(user_id: int):
+async def get_user_quotations(
+    user_id: int,
+    status: Optional[str] = Query(None, description="Filter quotations by status (pending, approved, rejected, draft, sent)")
+):
     """
     ## Get User Quotations 📋
     
-    Retrieve all quotations for a specific user.
+    Retrieve all quotations for a specific user with optional status filtering.
+    
+    **Query Parameters:**
+    - `status`: Optional filter by quotation status (pending, approved, rejected, draft, sent)
     
     **Response includes:**
     - `quotation_id`: Quotation ID
     - `quotation_name`: Name of the quotation
     - `client_name`: Client name
     - `total_cost`: Total cost of quotation
-    - `status`: Quotation status (draft, sent, approved, etc.)
+    - `status`: Quotation status (pending, approved, rejected, draft, sent)
     - `item_count`: Number of items in quotation
+    - `skus`: Array of SKUs from all items in the quotation
     - `created_at`: Creation timestamp
     - `updated_at`: Last update timestamp
     - `total_quotations`: Total number of quotations
+    - `status_filter`: Applied status filter (if any)
     """
     try:
-        quotations = quotation_manager.get_quotations_by_user(user_id)
+        # Validate status filter if provided
+        valid_statuses = ['pending', 'approved', 'rejected', 'draft', 'sent']
+        if status and status not in valid_statuses:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid status filter. Valid options: {', '.join(valid_statuses)}"
+            )
+        
+        quotations = quotation_manager.get_quotations_by_user(user_id, status)
         
         # Format response
         formatted_quotations = []
@@ -1222,6 +1240,7 @@ async def get_user_quotations(user_id: int):
                 "total_cost": quotation.get('total_cost', 0),
                 "status": quotation.get('status', 'draft'),
                 "item_count": quotation.get('item_count', 0),
+                "skus": quotation.get('skus', []),
                 "created_at": quotation.get('created_at'),
                 "updated_at": quotation.get('updated_at')
             })
@@ -1232,8 +1251,11 @@ async def get_user_quotations(user_id: int):
             "data": {
                 "user_id": user_id,
                 "quotations": formatted_quotations,
-                "total_quotations": len(formatted_quotations)
+                "total_quotations": len(formatted_quotations),
+                "status_filter": status
             }
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

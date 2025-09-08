@@ -1062,20 +1062,36 @@ class QuotationManager:
                 return dict(zip(columns, row))
             return None
     
-    def get_quotations_by_user(self, user_id: int) -> List[Dict]:
-        """Get all quotations for a user"""
+    def get_quotations_by_user(self, user_id: int, status: Optional[str] = None) -> List[Dict]:
+        """Get all quotations for a user with optional status filter"""
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute('''
+            
+            # Build the base query
+            base_query = '''
                 SELECT q.*, 
                        COUNT(qi.id) as item_count,
-                       COALESCE(SUM(qi.total_cost), 0) as calculated_total
+                       COALESCE(SUM(qi.total_cost), 0) as calculated_total,
+                       GROUP_CONCAT(DISTINCT qi.sku) as skus
                 FROM quotations q
                 LEFT JOIN quotation_items qi ON q.id = qi.quotation_id
                 WHERE q.user_id = ?
+            '''
+            
+            params = [user_id]
+            
+            # Add status filter if provided
+            if status:
+                base_query += ' AND q.status = ?'
+                params.append(status)
+            
+            # Complete the query
+            base_query += '''
                 GROUP BY q.id
                 ORDER BY q.created_at DESC
-            ''', (user_id,))
+            '''
+            
+            cursor.execute(base_query, params)
             
             rows = cursor.fetchall()
             columns = [desc[0] for desc in cursor.description]
@@ -1083,6 +1099,13 @@ class QuotationManager:
             
             for row in rows:
                 quotation = dict(zip(columns, row))
+                # Process SKUs - convert comma-separated string to list and filter out None/empty values
+                skus_str = quotation.get('skus', '')
+                if skus_str:
+                    skus = [sku.strip() for sku in skus_str.split(',') if sku.strip() and sku.strip() != 'None']
+                    quotation['skus'] = skus
+                else:
+                    quotation['skus'] = []
                 quotations.append(quotation)
             
             return quotations
@@ -1114,13 +1137,13 @@ class QuotationManager:
             conn.commit()
             return cursor.rowcount > 0
     
-    def get_contractor_quotation_stats(self) -> List[Dict]:
-        """Get quotation statistics for all contractors"""
+    def get_contractor_quotation_stats(self, search: Optional[str] = None) -> List[Dict]:
+        """Get quotation statistics for all contractors with optional name search"""
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
             
-            # Get contractors with their quotation statistics
-            cursor.execute('''
+            # Build the base query
+            base_query = '''
                 SELECT 
                     u.id as contractor_id,
                     u.first_name,
@@ -1136,9 +1159,23 @@ class QuotationManager:
                 FROM users u
                 LEFT JOIN quotations q ON u.id = q.user_id
                 WHERE u.role = 'contractor' AND u.account_status = 'approved'
+            '''
+            
+            params = []
+            
+            # Add search filter if provided
+            if search:
+                search_param = f'%{search}%'
+                base_query += ' AND (u.first_name LIKE ? OR u.last_name LIKE ? OR u.username LIKE ? OR u.company_name LIKE ?)'
+                params.extend([search_param, search_param, search_param, search_param])
+            
+            # Complete the query
+            base_query += '''
                 GROUP BY u.id, u.first_name, u.last_name, u.username, u.company_name, u.email, u.created_at
                 ORDER BY u.created_at DESC
-            ''')
+            '''
+            
+            cursor.execute(base_query, params)
             
             rows = cursor.fetchall()
             columns = [desc[0] for desc in cursor.description]

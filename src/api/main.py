@@ -3110,7 +3110,10 @@ async def export_accuracy_report(
 
 # Admin Dashboard Endpoints
 @app.get("/admin/contractors", response_model=Dict[str, Any])
-async def get_admin_contractors_dashboard(current_user: Dict[str, Any] = Depends(get_current_user)):
+async def get_admin_contractors_dashboard(
+    search: Optional[str] = None,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
     """Get contractors list with quotation statistics for admin dashboard"""
     try:
         # Check if user is admin
@@ -3124,8 +3127,8 @@ async def get_admin_contractors_dashboard(current_user: Dict[str, Any] = Depends
         db_manager = EnhancedDatabaseManager()
         quotation_manager = QuotationManager(db_manager)
         
-        # Get contractor statistics
-        contractors = quotation_manager.get_contractor_quotation_stats()
+        # Get contractor statistics with optional search
+        contractors = quotation_manager.get_contractor_quotation_stats(search)
         
         # Calculate total count
         total_count = len(contractors)
@@ -3134,7 +3137,8 @@ async def get_admin_contractors_dashboard(current_user: Dict[str, Any] = Depends
             "success": True,
             "data": {
                 "contractors": contractors,
-                "total_count": total_count
+                "total_count": total_count,
+                "search": search
             }
         }
         
