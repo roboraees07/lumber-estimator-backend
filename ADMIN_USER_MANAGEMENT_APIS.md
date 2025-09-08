@@ -116,24 +116,53 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 }
 ```
 
-### 3. Approve User
-**Endpoint:** `PUT /auth/users/{user_id}/approve`
+### 3. User Action (Approve/Reject)
+**Endpoint:** `PUT /auth/users/{user_id}/action`
 
-**Description:** Approve a pending user account.
+**Description:** Approve or reject a pending user account.
 
 **Path Parameters:**
-- `user_id` (required): The ID of the user to approve
+- `user_id` (required): The ID of the user to approve or reject
+
+**Request Body:**
+```json
+{
+  "user_id": 123,
+  "approved": true,
+  "rejection_reason": "Optional reason for rejection (required when approved=false)"
+}
+```
 
 **Headers:**
 - `Authorization: Bearer <admin_token>`
+- `Content-Type: application/json`
 
-**Example Request:**
+**Example Request - Approve User:**
 ```bash
-PUT /auth/users/123/approve
+PUT /auth/users/123/action
 Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+Content-Type: application/json
+
+{
+  "user_id": 123,
+  "approved": true
+}
 ```
 
-**Success Response:**
+**Example Request - Reject User:**
+```bash
+PUT /auth/users/123/action
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+Content-Type: application/json
+
+{
+  "user_id": 123,
+  "approved": false,
+  "rejection_reason": "Incomplete business license"
+}
+```
+
+**Success Response - Approve:**
 ```json
 {
   "success": true,
@@ -145,27 +174,7 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 }
 ```
 
-### 4. Reject User
-**Endpoint:** `PUT /auth/users/{user_id}/reject`
-
-**Description:** Reject a pending user account with optional reason.
-
-**Path Parameters:**
-- `user_id` (required): The ID of the user to reject
-
-**Query Parameters:**
-- `rejection_reason` (optional): Reason for rejection
-
-**Headers:**
-- `Authorization: Bearer <admin_token>`
-
-**Example Request:**
-```bash
-PUT /auth/users/123/reject?rejection_reason=Incomplete%20business%20license
-Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
-```
-
-**Success Response:**
+**Success Response - Reject:**
 ```json
 {
   "success": true,
@@ -178,7 +187,7 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 }
 ```
 
-### 5. Delete User
+### 4. Delete User
 **Endpoint:** `DELETE /auth/users/{user_id}`
 
 **Description:** Delete a user account permanently.
@@ -255,17 +264,47 @@ const getUsers = async (filters = {}) => {
 
 // Approve user
 const approveUser = async (userId) => {
-  const response = await fetch(`/auth/users/${userId}/approve`, {
+  const response = await fetch(`/auth/users/${userId}/action`, {
     method: 'PUT',
     headers: {
-      'Authorization': `Bearer ${adminToken}`
-    }
+      'Authorization': `Bearer ${adminToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      user_id: userId,
+      approved: true
+    })
   });
   
   const result = await response.json();
   
   if (result.success) {
     showSuccessMessage('User approved successfully');
+    refreshUserList();
+  } else {
+    showErrorMessage(result.message);
+  }
+};
+
+// Reject user
+const rejectUser = async (userId, reason) => {
+  const response = await fetch(`/auth/users/${userId}/action`, {
+    method: 'PUT',
+    headers: {
+      'Authorization': `Bearer ${adminToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      user_id: userId,
+      approved: false,
+      rejection_reason: reason
+    })
+  });
+  
+  const result = await response.json();
+  
+  if (result.success) {
+    showSuccessMessage('User rejected successfully');
     refreshUserList();
   } else {
     showErrorMessage(result.message);
@@ -341,11 +380,16 @@ const UserManagement = () => {
 
   const handleApprove = async (userId) => {
     try {
-      const response = await fetch(`/auth/users/${userId}/approve`, {
+      const response = await fetch(`/auth/users/${userId}/action`, {
         method: 'PUT',
         headers: {
-          'Authorization': `Bearer ${localStorage.getItem('adminToken')}`
-        }
+          'Authorization': `Bearer ${localStorage.getItem('adminToken')}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          user_id: userId,
+          approved: true
+        })
       });
       
       const result = await response.json();
@@ -363,11 +407,17 @@ const UserManagement = () => {
 
   const handleReject = async (userId, reason) => {
     try {
-      const response = await fetch(`/auth/users/${userId}/reject?rejection_reason=${encodeURIComponent(reason)}`, {
+      const response = await fetch(`/auth/users/${userId}/action`, {
         method: 'PUT',
         headers: {
-          'Authorization': `Bearer ${localStorage.getItem('adminToken')}`
-        }
+          'Authorization': `Bearer ${localStorage.getItem('adminToken')}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          user_id: userId,
+          approved: false,
+          rejection_reason: reason
+        })
       });
       
       const result = await response.json();

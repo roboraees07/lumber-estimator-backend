@@ -1029,12 +1029,12 @@ class QuotationManager:
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
             
-            # Create quotation with minimal data (auto-increment ID)
+            # Create quotation with minimal data (auto-increment ID) and set status to pending
             cursor.execute('''
                 INSERT INTO quotations (user_id, quotation_name, client_name, client_email, 
                                       client_phone, project_address, project_description, 
-                                      notes, valid_until)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                      notes, valid_until, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 user_id,
                 quotation_data.get('quotation_name') if quotation_data else None,
@@ -1044,7 +1044,8 @@ class QuotationManager:
                 quotation_data.get('project_address') if quotation_data else None,
                 quotation_data.get('project_description') if quotation_data else None,
                 quotation_data.get('notes') if quotation_data else None,
-                quotation_data.get('valid_until') if quotation_data else None
+                quotation_data.get('valid_until') if quotation_data else None,
+                'pending'  # Set status to pending for new quotations
             ))
             
             conn.commit()
@@ -1110,6 +1111,79 @@ class QuotationManager:
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('DELETE FROM quotations WHERE id = ?', (quotation_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+    
+    def get_contractor_quotation_stats(self) -> List[Dict]:
+        """Get quotation statistics for all contractors"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Get contractors with their quotation statistics
+            cursor.execute('''
+                SELECT 
+                    u.id as contractor_id,
+                    u.first_name,
+                    u.last_name,
+                    u.username,
+                    u.company_name,
+                    u.email,
+                    u.created_at,
+                    COUNT(q.id) as total_quotations,
+                    SUM(CASE WHEN q.status = 'approved' THEN 1 ELSE 0 END) as approved_quotations,
+                    SUM(CASE WHEN q.status = 'pending' OR q.status = 'sent' OR q.status = 'draft' THEN 1 ELSE 0 END) as pending_quotations,
+                    SUM(CASE WHEN q.status = 'rejected' THEN 1 ELSE 0 END) as declined_quotations
+                FROM users u
+                LEFT JOIN quotations q ON u.id = q.user_id
+                WHERE u.role = 'contractor' AND u.account_status = 'approved'
+                GROUP BY u.id, u.first_name, u.last_name, u.username, u.company_name, u.email, u.created_at
+                ORDER BY u.created_at DESC
+            ''')
+            
+            rows = cursor.fetchall()
+            columns = [desc[0] for desc in cursor.description]
+            
+            contractors = []
+            for row in rows:
+                contractor = dict(zip(columns, row))
+                # Format the contractor data for the frontend
+                formatted_contractor = {
+                    'id': contractor['contractor_id'],
+                    'name': f"{contractor.get('first_name', '')} {contractor.get('last_name', '')}".strip() or contractor['username'],
+                    'company_name': contractor.get('company_name'),
+                    'email': contractor['email'],
+                    'total_quotations': contractor['total_quotations'] or 0,
+                    'approved_quotations': contractor['approved_quotations'] or 0,
+                    'pending_quotations': contractor['pending_quotations'] or 0,
+                    'declined_quotations': contractor['declined_quotations'] or 0,
+                    'created_at': contractor['created_at']
+                }
+                contractors.append(formatted_contractor)
+            
+            return contractors
+    
+    def update_quotation_status(self, quotation_id: int, admin_id: int, action: str, rejection_reason: str = None) -> bool:
+        """Update quotation status (approve or reject)"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            if action == "reject":
+                # Reject quotation
+                cursor.execute('''
+                    UPDATE quotations 
+                    SET status = 'rejected', updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND status IN ('pending', 'draft', 'sent')
+                ''', (quotation_id,))
+            elif action == "approve":
+                # Approve quotation
+                cursor.execute('''
+                    UPDATE quotations 
+                    SET status = 'approved', updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND status IN ('pending', 'draft', 'sent')
+                ''', (quotation_id,))
+            else:
+                return False
+            
             conn.commit()
             return cursor.rowcount > 0
 

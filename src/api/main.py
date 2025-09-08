@@ -25,7 +25,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 from io import BytesIO
 
-from ..database.enhanced_models import EnhancedDatabaseManager, ContractorProfileManager, MaterialItemManager, ProjectManager, ManualItemsManager, EstimateHistoryManager
+from ..database.enhanced_models import EnhancedDatabaseManager, ContractorProfileManager, MaterialItemManager, ProjectManager, ManualItemsManager, EstimateHistoryManager, QuotationManager
 from ..core.contractor_input import ContractorDataImporter
 from ..core.estimation_engine import EstimationEngine
 from ..core.lumber_estimation_engine import lumber_estimation_engine
@@ -33,7 +33,7 @@ from ..core.accuracy_calculator import get_accuracy_calculator
 from .contractor_management import router as contractor_router
 from .contractor_dashboard import router as dashboard_router
 from .auth import router as auth_router
-from .auth import get_current_user
+from .auth import get_current_user, ApprovalRequest
 from .test_endpoints import router as test_router
 
 # Request models for manual item addition
@@ -3107,6 +3107,112 @@ async def export_accuracy_report(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to export accuracy report: {str(e)}")
+
+# Admin Dashboard Endpoints
+@app.get("/admin/contractors", response_model=Dict[str, Any])
+async def get_admin_contractors_dashboard(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """Get contractors list with quotation statistics for admin dashboard"""
+    try:
+        # Check if user is admin
+        if current_user.get("role") != "admin":
+            raise HTTPException(
+                status_code=403, 
+                detail="Only admins can access contractor dashboard"
+            )
+        
+        # Initialize database managers
+        db_manager = EnhancedDatabaseManager()
+        quotation_manager = QuotationManager(db_manager)
+        
+        # Get contractor statistics
+        contractors = quotation_manager.get_contractor_quotation_stats()
+        
+        # Calculate total count
+        total_count = len(contractors)
+        
+        return {
+            "success": True,
+            "data": {
+                "contractors": contractors,
+                "total_count": total_count
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch contractor dashboard data: {str(e)}")
+
+@app.put("/admin/quotations/{quotation_id}/action", response_model=Dict[str, Any])
+async def quotation_action(
+    quotation_id: int,
+    action_request: ApprovalRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Approve or reject a quotation (Admin only)"""
+    try:
+        # Check if user is admin
+        if current_user.get("role") != "admin":
+            raise HTTPException(
+                status_code=403, 
+                detail="Only admins can approve or reject quotations"
+            )
+        
+        # Validate that quotation_id in URL matches the one in request body
+        if action_request.user_id != quotation_id:
+            raise HTTPException(
+                status_code=400, 
+                detail="Quotation ID in URL and request body must match"
+            )
+        
+        # Determine action and validate rejection reason if needed
+        action = "approve" if action_request.approved else "reject"
+        
+        if action == "reject" and not action_request.rejection_reason:
+            raise HTTPException(
+                status_code=400, 
+                detail="Rejection reason is required when rejecting a quotation"
+            )
+        
+        # Initialize database managers
+        db_manager = EnhancedDatabaseManager()
+        quotation_manager = QuotationManager(db_manager)
+        
+        # Update quotation status
+        success = quotation_manager.update_quotation_status(
+            quotation_id, 
+            current_user['id'], 
+            action, 
+            action_request.rejection_reason
+        )
+        
+        if not success:
+            raise HTTPException(
+                status_code=404, 
+                detail="Quotation not found or already processed"
+            )
+        
+        # Return appropriate response
+        if action == "approve":
+            return {
+                "success": True,
+                "message": "Quotation approved successfully",
+                "data": {"quotation_id": quotation_id, "status": "approved"}
+            }
+        else:
+            return {
+                "success": True,
+                "message": "Quotation rejected successfully",
+                "data": {
+                    "quotation_id": quotation_id, 
+                    "status": "rejected", 
+                    "rejection_reason": action_request.rejection_reason
+                }
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

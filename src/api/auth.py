@@ -308,44 +308,57 @@ async def get_user_details(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.put("/users/{user_id}/approve", response_model=Dict[str, Any])
-async def approve_user(
+@router.put("/users/{user_id}/action", response_model=Dict[str, Any])
+async def user_action(
     user_id: int,
+    action_request: ApprovalRequest,
     admin_user: Dict[str, Any] = Depends(get_admin_user)
 ):
-    """Approve a user account (Admin only)"""
+    """Approve or reject a user account (Admin only)"""
     try:
-        success = auth_manager.approve_user(user_id, admin_user['id'])
-        if not success:
-            raise HTTPException(status_code=404, detail="User not found or already approved")
+        if action_request.user_id != user_id:
+            raise HTTPException(status_code=400, detail="User ID in URL and request body must match")
         
-        return {
-            "success": True,
-            "message": "User approved successfully",
-            "data": {"user_id": user_id, "status": "approved"}
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.put("/users/{user_id}/reject", response_model=Dict[str, Any])
-async def reject_user(
-    user_id: int,
-    rejection_reason: Optional[str] = None,
-    admin_user: Dict[str, Any] = Depends(get_admin_user)
-):
-    """Reject a user account (Admin only)"""
-    try:
-        success = auth_manager.reject_user(user_id, admin_user['id'], rejection_reason)
-        if not success:
-            raise HTTPException(status_code=404, detail="User not found or already processed")
+        # Determine action and validate rejection reason if needed
+        action = "approve" if action_request.approved else "reject"
         
-        return {
-            "success": True,
-            "message": "User rejected successfully",
-            "data": {"user_id": user_id, "status": "rejected", "rejection_reason": rejection_reason}
-        }
+        if action == "reject" and not action_request.rejection_reason:
+            raise HTTPException(
+                status_code=400, 
+                detail="Rejection reason is required when rejecting a user"
+            )
+        
+        # Update user status
+        success = auth_manager.update_user_status(
+            user_id, 
+            admin_user['id'], 
+            action, 
+            action_request.rejection_reason
+        )
+        
+        if not success:
+            raise HTTPException(
+                status_code=404, 
+                detail="User not found or already processed"
+            )
+        
+        # Return appropriate response
+        if action == "approve":
+            return {
+                "success": True,
+                "message": "User approved successfully",
+                "data": {"user_id": user_id, "status": "approved"}
+            }
+        else:
+            return {
+                "success": True,
+                "message": "User rejected successfully",
+                "data": {
+                    "user_id": user_id, 
+                    "status": "rejected", 
+                    "rejection_reason": action_request.rejection_reason
+                }
+            }
     except HTTPException:
         raise
     except Exception as e:

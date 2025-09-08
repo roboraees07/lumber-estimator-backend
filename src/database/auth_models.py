@@ -307,27 +307,30 @@ class UserAuthManager:
             
             return [dict(zip(columns, row)) for row in rows]
     
-    def approve_user(self, user_id: int, admin_id: int, rejection_reason: str = None) -> bool:
-        """Approve or reject user account"""
+    def update_user_status(self, user_id: int, admin_id: int, action: str, rejection_reason: str = None) -> bool:
+        """Update user account status (approve or reject)"""
         with self.auth_db.get_connection() as conn:
             cursor = conn.cursor()
             
-            if rejection_reason:
+            if action == "reject":
                 # Reject user
                 cursor.execute('''
                     UPDATE users 
-                    SET account_status = 'rejected', rejection_reason = ?, 
+                    SET account_status = 'rejected', approved_by = ?, 
+                        approved_at = CURRENT_TIMESTAMP, rejection_reason = ?, 
                         updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                ''', (rejection_reason, user_id))
-            else:
+                    WHERE id = ? AND account_status = 'pending'
+                ''', (admin_id, rejection_reason, user_id))
+            elif action == "approve":
                 # Approve user
                 cursor.execute('''
                     UPDATE users 
                     SET account_status = 'approved', approved_by = ?, 
                         approved_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
+                    WHERE id = ? AND account_status = 'pending'
                 ''', (admin_id, user_id))
+            else:
+                return False
             
             conn.commit()
             return cursor.rowcount > 0
