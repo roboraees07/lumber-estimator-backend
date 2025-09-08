@@ -250,9 +250,6 @@ class QuotationItemCreate(BaseModel):
     unit: str = Field(..., description="Unit of measure", example="per sq ft")
     unit_of_measure: str = Field(..., description="Unit of measure description", example="per sq ft, per piece, per hour")
     cost: float = Field(..., description="Cost per unit", example=12.50)
-    quantity: Optional[float] = Field(1, description="Quantity", example=100)
-    description: Optional[str] = Field(None, description="Item description")
-    category: Optional[str] = Field(None, description="Item category")
 
 class QuotationItemResponse(BaseModel):
     item_id: int
@@ -1102,9 +1099,6 @@ async def add_item_to_quotation(quotation_id: int, item: QuotationItemCreate):
     
     **Optional Fields:**
     - `sku`: SKU/Product Code (returns "N/A" if not provided)
-    - `quantity`: Quantity (defaults to 1)
-    - `description`: Item description
-    - `category`: Item category
     
     **Response includes:**
     - `item_id`: Auto-assigned item ID
@@ -1116,10 +1110,15 @@ async def add_item_to_quotation(quotation_id: int, item: QuotationItemCreate):
         if not quotation:
             raise HTTPException(status_code=404, detail="Quotation not found")
         
-        # Add item
+        # Add item with default values for missing fields
+        item_dict = item.dict()
+        item_dict['quantity'] = 1  # Default quantity
+        item_dict['description'] = None  # Default description
+        item_dict['category'] = None  # Default category
+        
         item_id = quotation_item_manager.add_item_to_quotation(
             quotation_id, 
-            item.dict()
+            item_dict
         )
         
         # Get the created item
