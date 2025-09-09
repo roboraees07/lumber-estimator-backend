@@ -386,6 +386,24 @@ class UserAuthManager:
             
             conn.commit()
             return cursor.rowcount > 0
+    
+    def update_password(self, user_id: int, new_password: str) -> bool:
+        """Update user password"""
+        with self.auth_db.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Hash the new password
+            new_password_hash = self.hash_password(new_password)
+            
+            # Update the password
+            cursor.execute('''
+                UPDATE users 
+                SET password_hash = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            ''', (new_password_hash, user_id))
+            
+            conn.commit()
+            return cursor.rowcount > 0
 
     def get_all_users(self) -> List[Dict]:
         """Get a list of all users (excluding admin users)"""

@@ -59,9 +59,19 @@ class UserProfileUpdate(BaseModel):
     zip_code: Optional[str] = None
 
 class ApprovalRequest(BaseModel):
-    user_id: int
+    quotation_id: int
     approved: bool
     rejection_reason: Optional[str] = None
+
+class ProjectActionRequest(BaseModel):
+    project_id: int
+    approved: bool
+    rejection_reason: Optional[str] = None
+
+class PasswordChangeRequest(BaseModel):
+    user_id: int
+    new_password: str
+    confirm_password: str
 
 # Dependency to get current user from JWT token
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict[str, Any]:
@@ -196,6 +206,62 @@ async def update_user_profile(
         )
     
     return {"message": "Profile updated successfully"}
+
+@router.put("/change-password", response_model=Dict[str, Any])
+async def change_password(
+    password_data: PasswordChangeRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Change user password - works for both self-service and admin password resets"""
+    try:
+        # Validate new password length
+        if len(password_data.new_password) < 6:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="New password must be at least 6 characters long"
+            )
+        
+        # Check if passwords match
+        if password_data.new_password != password_data.confirm_password:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="New password and confirm password do not match"
+            )
+        
+        # Check if user is trying to change their own password or if they're an admin
+        if password_data.user_id != current_user['id'] and current_user.get('role') != 'admin':
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You can only change your own password unless you're an admin"
+            )
+        
+        # Update password (no current password verification needed)
+        success = auth_manager.update_password(password_data.user_id, password_data.new_password)
+        
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+        
+        # Determine success message based on who is changing the password
+        if password_data.user_id == current_user['id']:
+            message = "Your password has been updated successfully"
+        else:
+            message = f"Password updated successfully for user ID {password_data.user_id}"
+        
+        return {
+            "success": True,
+            "message": message
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Password update failed: {str(e)}"
+        )
 
 @router.get("/pending-approvals", response_model=List[Dict[str, Any]])
 async def get_pending_approvals(admin_user: Dict[str, Any] = Depends(get_admin_user)):

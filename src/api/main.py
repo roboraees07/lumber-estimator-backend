@@ -33,7 +33,7 @@ from ..core.accuracy_calculator import get_accuracy_calculator
 from .contractor_management import router as contractor_router
 from .contractor_dashboard import router as dashboard_router
 from .auth import router as auth_router
-from .auth import get_current_user, ApprovalRequest
+from .auth import get_current_user, ApprovalRequest, ProjectActionRequest
 from .test_endpoints import router as test_router
 
 # Request models for manual item addition
@@ -3163,7 +3163,7 @@ async def quotation_action(
             )
         
         # Validate that quotation_id in URL matches the one in request body
-        if action_request.user_id != quotation_id:
+        if action_request.quotation_id != quotation_id:
             raise HTTPException(
                 status_code=400, 
                 detail="Quotation ID in URL and request body must match"
@@ -3213,6 +3213,248 @@ async def quotation_action(
                     "rejection_reason": action_request.rejection_reason
                 }
             }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Admin Project Action Endpoint
+@app.put("/admin/projects/{project_id}/action", response_model=Dict[str, Any])
+async def project_action(
+    project_id: int,
+    action_request: ProjectActionRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Approve or reject an estimator project (Admin only)"""
+    try:
+        # Check if user is admin
+        if current_user.get("role") != "admin":
+            raise HTTPException(
+                status_code=403, 
+                detail="Only admins can approve or reject projects"
+            )
+        
+        # Validate that project_id in URL matches the one in request body
+        if action_request.project_id != project_id:
+            raise HTTPException(
+                status_code=400, 
+                detail="Project ID in URL and request body must match"
+            )
+        
+        # Determine action and validate rejection reason if needed
+        action = "approve" if action_request.approved else "reject"
+        
+        if action == "reject" and not action_request.rejection_reason:
+            raise HTTPException(
+                status_code=400, 
+                detail="Rejection reason is required when rejecting a project"
+            )
+        
+        # Initialize database managers
+        db_manager = EnhancedDatabaseManager()
+        project_manager = ProjectManager(db_manager)
+        
+        # Update project status
+        success = project_manager.update_project_approval_status(
+            project_id, 
+            current_user['id'], 
+            action, 
+            action_request.rejection_reason
+        )
+        
+        if not success:
+            raise HTTPException(
+                status_code=404, 
+                detail="Project not found or already processed"
+            )
+        
+        # Return appropriate response
+        if action == "approve":
+            return {
+                "success": True,
+                "message": "Project approved successfully",
+                "data": {"project_id": project_id, "status": "approved"}
+            }
+        else:
+            return {
+                "success": True,
+                "message": "Project rejected successfully",
+                "data": {
+                    "project_id": project_id, 
+                    "status": "rejected", 
+                    "rejection_reason": action_request.rejection_reason
+                }
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Admin Estimator Management Endpoints
+@app.get("/admin/estimators", response_model=Dict[str, Any])
+async def get_admin_estimators_dashboard(
+    search: Optional[str] = None,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Get estimators list with project statistics for admin dashboard"""
+    try:
+        # Check if user is admin
+        if current_user.get("role") != "admin":
+            raise HTTPException(
+                status_code=403, 
+                detail="Only admins can access estimator dashboard"
+            )
+        
+        # Initialize database managers
+        db_manager = EnhancedDatabaseManager()
+        project_manager = ProjectManager(db_manager)
+        
+        # Get estimator project statistics with optional search
+        estimators = project_manager.get_estimator_project_stats(search)
+        
+        # Calculate total count
+        total_count = len(estimators)
+        
+        return {
+            "success": True,
+            "data": {
+                "estimators": estimators,
+                "total_count": total_count,
+                "search": search
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch estimator dashboard data: {str(e)}")
+
+@app.get("/admin/quotations", response_model=Dict[str, Any])
+async def get_admin_quotations_dashboard(
+    search: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Get all quotations with contractor details for admin dashboard"""
+    try:
+        # Check if user is admin
+        if current_user.get("role") != "admin":
+            raise HTTPException(
+                status_code=403, 
+                detail="Only admins can access quotations dashboard"
+            )
+        
+        # Validate status filter if provided
+        valid_statuses = ['pending', 'approved', 'rejected', 'draft', 'sent', 'completed']
+        if status and status not in valid_statuses:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid status filter. Valid options: {', '.join(valid_statuses)}"
+            )
+        
+        # Initialize database managers
+        db_manager = EnhancedDatabaseManager()
+        quotation_manager = QuotationManager(db_manager)
+        
+        # Get quotations with contractor details
+        quotations = quotation_manager.get_all_quotations_with_contractor_details(
+            search=search, 
+            status=status, 
+            limit=limit, 
+            offset=offset
+        )
+        
+        # Get total count for pagination
+        total_count = quotation_manager.get_quotations_count(search=search, status=status)
+        
+        return {
+            "success": True,
+            "data": {
+                "quotations": quotations,
+                "pagination": {
+                    "total_count": total_count,
+                    "limit": limit,
+                    "offset": offset,
+                    "has_more": (offset + limit) < total_count
+                },
+                "filters": {
+                    "search": search,
+                    "status": status
+                }
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch quotations dashboard data: {str(e)}")
+
+@app.get("/admin/estimators/{estimator_id}/projects", response_model=Dict[str, Any])
+async def get_admin_estimator_projects(
+    estimator_id: int,
+    status: Optional[str] = None,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Get projects for a specific estimator with optional status filter (Admin only)"""
+    try:
+        # Check if user is admin
+        if current_user.get("role") != "admin":
+            raise HTTPException(
+                status_code=403, 
+                detail="Only admins can access estimator projects"
+            )
+        
+        # Validate status filter if provided
+        valid_statuses = ['pending', 'planning', 'active', 'completed', 'cancelled', 'estimate_submitted']
+        if status and status not in valid_statuses:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid status filter. Valid options: {', '.join(valid_statuses)}"
+            )
+        
+        # Initialize database managers
+        db_manager = EnhancedDatabaseManager()
+        project_manager = ProjectManager(db_manager)
+        
+        # Get projects for the estimator
+        projects = project_manager.get_projects_by_user(estimator_id, status)
+        
+        # Format response
+        formatted_projects = []
+        for project in projects:
+            # Extract SKUs from analysis data if available
+            skus = []
+            if project.get('analysis_data') and isinstance(project['analysis_data'], dict):
+                detailed_items = project['analysis_data'].get('detailed_items', [])
+                skus = [item.get('sku', '') for item in detailed_items if item.get('sku')]
+            
+            formatted_projects.append({
+                "project_id": project['id'],
+                "project_name": project.get('name'),
+                "description": project.get('description'),
+                "project_type": project.get('project_type'),
+                "location": project.get('location'),
+                "total_cost": project.get('total_cost', 0),
+                "status": project.get('status', 'pending'),
+                "client_name": project.get('client_name'),
+                "client_contact": project.get('client_contact'),
+                "skus": skus,
+                "created_at": project.get('created_at'),
+                "updated_at": project.get('updated_at')
+            })
+        
+        return {
+            "success": True,
+            "message": "Estimator projects retrieved successfully",
+            "data": {
+                "estimator_id": estimator_id,
+                "projects": formatted_projects,
+                "total_projects": len(formatted_projects),
+                "status_filter": status
+            }
+        }
     except HTTPException:
         raise
     except Exception as e:

@@ -249,7 +249,7 @@ class EnhancedDatabaseManager:
                     estimate_data TEXT NOT NULL, -- JSON data of the complete estimate
                     total_cost REAL NOT NULL,
                     total_items_count INTEGER NOT NULL,
-                    status TEXT DEFAULT 'submitted', -- submitted, approved, rejected, completed
+                    status TEXT DEFAULT 'pending', -- pending, submitted, approved, rejected, completed
                     notes TEXT,
                     client_notes TEXT,
                     approval_date TIMESTAMP,
@@ -772,11 +772,11 @@ class EstimateHistoryManager:
             cursor.execute('''
                 INSERT INTO estimate_history (
                     project_id, project_name, submitted_by, estimate_data, 
-                    total_cost, total_items_count, notes, client_notes
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    total_cost, total_items_count, notes, client_notes, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 project_id, project_name, submitted_by, json.dumps(estimate_data),
-                total_cost, total_items_count, notes, client_notes
+                total_cost, total_items_count, notes, client_notes, 'submitted'
             ))
             conn.commit()
             return cursor.lastrowid
@@ -839,7 +839,7 @@ class ProjectManager:
         self.db = db_manager
     
     def create_project(self, name: str, description: str = None, pdf_path: str = None, user_id: int = None) -> int:
-        """Create a new project"""
+        """Create a new project with pending status for estimates"""
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
             
@@ -853,17 +853,17 @@ class ProjectManager:
                 # This is a temporary fix until the database is migrated
                 print("⚠️ Warning: user_id column not found in projects table. Creating project without user_id.")
                 cursor.execute('''
-                    INSERT INTO projects (name, description, pdf_path)
-                    VALUES (?, ?, ?)
-                ''', (name, description, pdf_path))
+                    INSERT INTO projects (name, description, pdf_path, status)
+                    VALUES (?, ?, ?, ?)
+                ''', (name, description, pdf_path, 'pending'))
             else:
                 if user_id is None:
                     raise ValueError("user_id is required to create a project")
                 
                 cursor.execute('''
-                    INSERT INTO projects (name, description, pdf_path, user_id)
-                    VALUES (?, ?, ?, ?)
-                ''', (name, description, pdf_path, user_id))
+                    INSERT INTO projects (name, description, pdf_path, user_id, status)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (name, description, pdf_path, user_id, 'pending'))
             
             conn.commit()
             return cursor.lastrowid
@@ -928,8 +928,8 @@ class ProjectManager:
                 projects.append(project)
             return projects
     
-    def get_projects_by_user(self, user_id: int) -> List[Dict]:
-        """Get projects for a specific user"""
+    def get_projects_by_user(self, user_id: int, status: Optional[str] = None) -> List[Dict]:
+        """Get projects for a specific user with optional status filter"""
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
             
@@ -938,13 +938,20 @@ class ProjectManager:
             columns_info = cursor.fetchall()
             column_names = [col[1] for col in columns_info]
             
+            # Build query with optional status filter
             if 'user_id' not in column_names:
                 # If user_id column doesn't exist, return all projects for now
                 # This is a temporary fix until the database is migrated
                 print("⚠️ Warning: user_id column not found in projects table. Returning all projects.")
-                cursor.execute('SELECT * FROM projects ORDER BY created_at DESC')
+                if status:
+                    cursor.execute('SELECT * FROM projects WHERE status = ? ORDER BY created_at DESC', (status,))
+                else:
+                    cursor.execute('SELECT * FROM projects ORDER BY created_at DESC')
             else:
-                cursor.execute('SELECT * FROM projects WHERE user_id = ? ORDER BY created_at DESC', (user_id,))
+                if status:
+                    cursor.execute('SELECT * FROM projects WHERE user_id = ? AND status = ? ORDER BY created_at DESC', (user_id, status))
+                else:
+                    cursor.execute('SELECT * FROM projects WHERE user_id = ? ORDER BY created_at DESC', (user_id,))
             
             rows = cursor.fetchall()
             columns = [desc[0] for desc in cursor.description]
@@ -999,6 +1006,51 @@ class ProjectManager:
             conn.commit()
             return cursor.rowcount > 0
     
+    def update_project_approval_status(self, project_id: int, admin_id: int, action: str, rejection_reason: str = None) -> bool:
+        """Update project approval status (approve/reject) with admin tracking"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Check if project exists and is in a valid state for approval/rejection
+            cursor.execute('SELECT status FROM projects WHERE id = ?', (project_id,))
+            result = cursor.fetchone()
+            if not result:
+                return False
+            
+            current_status = result[0]
+            valid_statuses = ['pending', 'estimate_submitted']
+            if current_status not in valid_statuses:
+                return False
+            
+            # Update project status based on action
+            if action == "approve":
+                new_status = "approved"
+            elif action == "reject":
+                new_status = "rejected"
+            else:
+                return False
+            
+            cursor.execute('''
+                UPDATE projects 
+                SET status = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            ''', (new_status, project_id))
+            
+            # Check if project update was successful
+            project_updated = cursor.rowcount > 0
+            
+            # Also update the estimate history if it exists (optional)
+            cursor.execute('''
+                UPDATE estimate_history 
+                SET status = ?, approval_date = CURRENT_TIMESTAMP, 
+                    approved_by = (SELECT username FROM users WHERE id = ?),
+                    notes = ?
+                WHERE project_id = ? AND status = 'submitted'
+            ''', (new_status, admin_id, rejection_reason, project_id))
+            
+            conn.commit()
+            return project_updated
+    
     def user_owns_project(self, user_id: int, project_id: int) -> bool:
         """Check if a user owns a specific project"""
         with self.db.get_connection() as conn:
@@ -1018,6 +1070,80 @@ class ProjectManager:
             cursor.execute('SELECT COUNT(*) FROM projects WHERE id = ? AND user_id = ?', (project_id, user_id))
             count = cursor.fetchone()[0]
             return count > 0
+    
+    def get_estimator_project_stats(self, search: Optional[str] = None) -> List[Dict]:
+        """Get project statistics for all estimators with optional name search"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Check if user_id column exists in projects table
+            cursor.execute("PRAGMA table_info(projects)")
+            columns_info = cursor.fetchall()
+            column_names = [col[1] for col in columns_info]
+            
+            if 'user_id' not in column_names:
+                # If user_id column doesn't exist, return empty list with warning
+                print("⚠️ Warning: user_id column not found in projects table. Cannot track estimator project statistics.")
+                return []
+            
+            # Build the base query
+            base_query = '''
+                SELECT 
+                    u.id as estimator_id,
+                    u.first_name,
+                    u.last_name,
+                    u.username,
+                    u.company_name,
+                    u.email,
+                    u.created_at,
+                    COUNT(p.id) as total_projects,
+                    SUM(CASE WHEN p.status = 'pending' THEN 1 ELSE 0 END) as pending_projects,
+                    SUM(CASE WHEN p.status = 'rejected' THEN 1 ELSE 0 END) as rejected_projects,
+                    SUM(CASE WHEN p.status = 'active' THEN 1 ELSE 0 END) as active_projects,
+                    COALESCE(SUM(p.total_cost), 0) as total_project_value
+                FROM users u
+                LEFT JOIN projects p ON u.id = p.user_id
+                WHERE u.role = 'estimator' AND u.account_status = 'approved'
+            '''
+            
+            params = []
+            
+            # Add search filter if provided
+            if search:
+                search_param = f'%{search}%'
+                base_query += ' AND (u.first_name LIKE ? OR u.last_name LIKE ? OR u.username LIKE ? OR u.company_name LIKE ?)'
+                params.extend([search_param, search_param, search_param, search_param])
+            
+            # Complete the query
+            base_query += '''
+                GROUP BY u.id, u.first_name, u.last_name, u.username, u.company_name, u.email, u.created_at
+                ORDER BY u.created_at DESC
+            '''
+            
+            cursor.execute(base_query, params)
+            
+            rows = cursor.fetchall()
+            columns = [desc[0] for desc in cursor.description]
+            
+            estimators = []
+            for row in rows:
+                estimator = dict(zip(columns, row))
+                # Format the estimator data for the frontend
+                formatted_estimator = {
+                    'id': estimator['estimator_id'],
+                    'name': f"{estimator.get('first_name', '')} {estimator.get('last_name', '')}".strip() or estimator['username'],
+                    'company_name': estimator.get('company_name'),
+                    'email': estimator['email'],
+                    'total_projects': estimator['total_projects'] or 0,
+                    'pending_projects': estimator['pending_projects'] or 0,
+                    'rejected_projects': estimator['rejected_projects'] or 0,
+                    'active_projects': estimator['active_projects'] or 0,
+                    'total_project_value': estimator['total_project_value'] or 0,
+                    'created_at': estimator['created_at']
+                }
+                estimators.append(formatted_estimator)
+            
+            return estimators
 
 
 class QuotationManager:
@@ -1199,6 +1325,231 @@ class QuotationManager:
             
             return contractors
     
+    def get_estimator_quotation_stats(self, search: Optional[str] = None) -> List[Dict]:
+        """Get quotation statistics for all estimators with optional name search"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Build the base query
+            base_query = '''
+                SELECT 
+                    u.id as estimator_id,
+                    u.first_name,
+                    u.last_name,
+                    u.username,
+                    u.company_name,
+                    u.email,
+                    u.created_at,
+                    COUNT(q.id) as total_quotations,
+                    SUM(CASE WHEN q.status = 'approved' THEN 1 ELSE 0 END) as approved_quotations,
+                    SUM(CASE WHEN q.status = 'pending' OR q.status = 'sent' OR q.status = 'draft' THEN 1 ELSE 0 END) as pending_quotations,
+                    SUM(CASE WHEN q.status = 'rejected' THEN 1 ELSE 0 END) as declined_quotations
+                FROM users u
+                LEFT JOIN quotations q ON u.id = q.user_id
+                WHERE u.role = 'estimator' AND u.account_status = 'approved'
+            '''
+            
+            params = []
+            
+            # Add search filter if provided
+            if search:
+                search_param = f'%{search}%'
+                base_query += ' AND (u.first_name LIKE ? OR u.last_name LIKE ? OR u.username LIKE ? OR u.company_name LIKE ?)'
+                params.extend([search_param, search_param, search_param, search_param])
+            
+            # Complete the query
+            base_query += '''
+                GROUP BY u.id, u.first_name, u.last_name, u.username, u.company_name, u.email, u.created_at
+                ORDER BY u.created_at DESC
+            '''
+            
+            cursor.execute(base_query, params)
+            
+            rows = cursor.fetchall()
+            columns = [desc[0] for desc in cursor.description]
+            
+            estimators = []
+            for row in rows:
+                estimator = dict(zip(columns, row))
+                # Format the estimator data for the frontend
+                formatted_estimator = {
+                    'id': estimator['estimator_id'],
+                    'name': f"{estimator.get('first_name', '')} {estimator.get('last_name', '')}".strip() or estimator['username'],
+                    'company_name': estimator.get('company_name'),
+                    'email': estimator['email'],
+                    'total_quotations': estimator['total_quotations'] or 0,
+                    'approved_quotations': estimator['approved_quotations'] or 0,
+                    'pending_quotations': estimator['pending_quotations'] or 0,
+                    'declined_quotations': estimator['declined_quotations'] or 0,
+                    'created_at': estimator['created_at']
+                }
+                estimators.append(formatted_estimator)
+            
+            return estimators
+    
+    def get_all_quotations_with_contractor_details(self, search: Optional[str] = None, status: Optional[str] = None, limit: int = 100, offset: int = 0) -> List[Dict]:
+        """Get all quotations with contractor details for admin dashboard"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Build the base query with contractor information
+            base_query = '''
+                SELECT 
+                    q.id as quotation_id,
+                    q.quotation_name,
+                    q.client_name,
+                    q.client_email,
+                    q.client_phone,
+                    q.project_address,
+                    q.project_description,
+                    q.total_cost,
+                    q.status,
+                    q.valid_until,
+                    q.notes,
+                    q.created_at,
+                    q.updated_at,
+                    u.id as contractor_id,
+                    u.first_name,
+                    u.last_name,
+                    u.username,
+                    u.company_name,
+                    u.email as contractor_email,
+                    u.phone as contractor_phone,
+                    COUNT(qi.id) as item_count,
+                    GROUP_CONCAT(DISTINCT qi.sku) as skus
+                FROM quotations q
+                LEFT JOIN users u ON q.user_id = u.id
+                LEFT JOIN quotation_items qi ON q.id = qi.quotation_id
+            '''
+            
+            where_conditions = []
+            params = []
+            
+            # Add search filter if provided
+            if search:
+                search_param = f'%{search}%'
+                where_conditions.append('''
+                    (q.quotation_name LIKE ? OR q.client_name LIKE ? OR 
+                     u.first_name LIKE ? OR u.last_name LIKE ? OR 
+                     u.company_name LIKE ? OR u.username LIKE ?)
+                ''')
+                params.extend([search_param, search_param, search_param, search_param, search_param, search_param])
+            
+            # Add status filter if provided
+            if status:
+                where_conditions.append('q.status = ?')
+                params.append(status)
+            
+            # Add WHERE clause if conditions exist
+            if where_conditions:
+                base_query += ' WHERE ' + ' AND '.join(where_conditions)
+            
+            # Complete the query with grouping and ordering
+            base_query += '''
+                GROUP BY q.id, q.quotation_name, q.client_name, q.client_email, q.client_phone,
+                         q.project_address, q.project_description, q.total_cost, q.status,
+                         q.valid_until, q.notes, q.created_at, q.updated_at,
+                         u.id, u.first_name, u.last_name, u.username, u.company_name,
+                         u.email, u.phone
+                ORDER BY q.created_at DESC
+                LIMIT ? OFFSET ?
+            '''
+            
+            params.extend([limit, offset])
+            cursor.execute(base_query, params)
+            
+            rows = cursor.fetchall()
+            columns = [desc[0] for desc in cursor.description]
+            
+            quotations = []
+            for row in rows:
+                quotation = dict(zip(columns, row))
+                
+                # Format contractor name
+                contractor_name = "Unknown"
+                if quotation.get('first_name') and quotation.get('last_name'):
+                    contractor_name = f"{quotation['first_name']} {quotation['last_name']}"
+                elif quotation.get('company_name'):
+                    contractor_name = quotation['company_name']
+                elif quotation.get('username'):
+                    contractor_name = quotation['username']
+                
+                # Process SKUs - convert comma-separated string to list and filter out None/empty values
+                skus_str = quotation.get('skus', '')
+                if skus_str:
+                    skus = [sku.strip() for sku in skus_str.split(',') if sku.strip() and sku.strip() != 'None']
+                    quotation['skus'] = skus
+                else:
+                    quotation['skus'] = []
+                
+                # Format the quotation data for the frontend
+                formatted_quotation = {
+                    'quotation_id': quotation['quotation_id'],
+                    'quotation_name': quotation.get('quotation_name', 'Untitled Quotation'),
+                    'client_name': quotation.get('client_name'),
+                    'client_email': quotation.get('client_email'),
+                    'client_phone': quotation.get('client_phone'),
+                    'project_address': quotation.get('project_address'),
+                    'project_description': quotation.get('project_description'),
+                    'total_cost': quotation.get('total_cost', 0),
+                    'status': quotation.get('status', 'draft'),
+                    'valid_until': quotation.get('valid_until'),
+                    'notes': quotation.get('notes'),
+                    'created_at': quotation.get('created_at'),
+                    'updated_at': quotation.get('updated_at'),
+                    'contractor': {
+                        'id': quotation.get('contractor_id'),
+                        'name': contractor_name,
+                        'first_name': quotation.get('first_name'),
+                        'last_name': quotation.get('last_name'),
+                        'username': quotation.get('username'),
+                        'company_name': quotation.get('company_name'),
+                        'email': quotation.get('contractor_email'),
+                        'phone': quotation.get('contractor_phone')
+                    },
+                    'item_count': quotation.get('item_count', 0),
+                    'skus': quotation.get('skus', [])
+                }
+                quotations.append(formatted_quotation)
+            
+            return quotations
+    
+    def get_quotations_count(self, search: Optional[str] = None, status: Optional[str] = None) -> int:
+        """Get total count of quotations for pagination"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            base_query = '''
+                SELECT COUNT(DISTINCT q.id)
+                FROM quotations q
+                LEFT JOIN users u ON q.user_id = u.id
+            '''
+            
+            where_conditions = []
+            params = []
+            
+            # Add search filter if provided
+            if search:
+                search_param = f'%{search}%'
+                where_conditions.append('''
+                    (q.quotation_name LIKE ? OR q.client_name LIKE ? OR 
+                     u.first_name LIKE ? OR u.last_name LIKE ? OR 
+                     u.company_name LIKE ? OR u.username LIKE ?)
+                ''')
+                params.extend([search_param, search_param, search_param, search_param, search_param, search_param])
+            
+            # Add status filter if provided
+            if status:
+                where_conditions.append('q.status = ?')
+                params.append(status)
+            
+            # Add WHERE clause if conditions exist
+            if where_conditions:
+                base_query += ' WHERE ' + ' AND '.join(where_conditions)
+            
+            cursor.execute(base_query, params)
+            return cursor.fetchone()[0]
+
     def update_quotation_status(self, quotation_id: int, admin_id: int, action: str, rejection_reason: str = None) -> bool:
         """Update quotation status (approve or reject)"""
         with self.db.get_connection() as conn:

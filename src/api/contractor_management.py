@@ -4,7 +4,7 @@ Contractor Management APIs
 Advanced contractor profiling and item management endpoints
 """
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Query
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Query, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
@@ -15,6 +15,7 @@ import os
 from datetime import datetime, date
 
 from ..database.enhanced_models import EnhancedDatabaseManager, ContractorProfileManager, MaterialItemManager, QuotationManager, QuotationItemManager
+from ..api.auth import get_current_user
 
 # Initialize enhanced database and managers
 enhanced_db = EnhancedDatabaseManager()
@@ -948,6 +949,8 @@ async def create_quotation_item(
                         "message": "Items retrieved successfully",
                         "data": {
                             "quotation_id": 123,
+                            "quotation_status": "pending",
+                            "contractor_name": "John Smith",
                             "items": [
                                 {
                                     "item_id": 456,
@@ -988,6 +991,9 @@ async def get_quotation_items(quotation_id: int):
     Retrieve all items from a specific quotation.
     
     **Response includes:**
+    - `quotation_id`: ID of the quotation
+    - `quotation_status`: Current status of the quotation (draft, sent, approved, rejected, completed)
+    - `contractor_name`: Name of the contractor/user who created the quotation
     - `item_id`: Auto-assigned item ID
     - `item_name`: Name of the item
     - `sku_id`: SKU/Product Code (or "N/A" if not provided)
@@ -1004,6 +1010,22 @@ async def get_quotation_items(quotation_id: int):
         quotation = quotation_manager.get_quotation(quotation_id)
         if not quotation:
             raise HTTPException(status_code=404, detail="Quotation not found")
+        
+        # Get contractor/user information
+        contractor_name = "Unknown"
+        if quotation.get('user_id'):
+            from src.database.auth_models import UserAuthManager, AuthDatabaseManager
+            auth_db = AuthDatabaseManager()
+            user_manager = UserAuthManager(auth_db)
+            user = user_manager.get_user_by_id(quotation['user_id'])
+            if user:
+                # Format contractor name
+                if user.get('first_name') and user.get('last_name'):
+                    contractor_name = f"{user['first_name']} {user['last_name']}"
+                elif user.get('company_name'):
+                    contractor_name = user['company_name']
+                else:
+                    contractor_name = user.get('username', 'Unknown')
         
         # Get items
         items = quotation_item_manager.get_items_by_quotation(quotation_id)
@@ -1030,6 +1052,8 @@ async def get_quotation_items(quotation_id: int):
             "message": "Items retrieved successfully",
             "data": {
                 "quotation_id": quotation_id,
+                "quotation_status": quotation.get('status', 'unknown'),
+                "contractor_name": contractor_name,
                 "items": formatted_items,
                 "total_items": len(formatted_items),
                 "total_cost": total_cost
@@ -1147,6 +1171,118 @@ async def add_item_to_quotation(quotation_id: int, item: QuotationItemCreate):
                 "item": formatted_item
             }
         }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete(
+    "/quotations/{quotation_id}",
+    response_model=dict,
+    summary="🗑️ Delete Quotation",
+    description="Delete a quotation and all its items. Only the quotation owner can delete their quotations.",
+    response_description="Quotation deleted successfully",
+    responses={
+        200: {
+            "description": "Quotation deleted successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "success": True,
+                        "message": "Quotation deleted successfully",
+                        "data": {
+                            "quotation_id": 123,
+                            "deleted_at": "2024-01-15T10:30:00"
+                        }
+                    }
+                }
+            }
+        },
+        403: {
+            "description": "Access denied - not the quotation owner and not an admin",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "success": False,
+                        "message": "Access denied",
+                        "detail": "You can only delete your own quotations unless you're an admin"
+                    }
+                }
+            }
+        },
+        404: {
+            "description": "Quotation not found",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "success": False,
+                        "message": "Quotation not found",
+                        "detail": "Quotation not found"
+                    }
+                }
+            }
+        }
+    }
+)
+async def delete_quotation(
+    quotation_id: int,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    ## Delete Quotation 🗑️
+    
+    Delete a quotation and all its associated items. Users can delete their own quotations, admins can delete any quotation.
+    
+    **Security:**
+    - Only authenticated users can delete quotations
+    - Users can only delete their own quotations
+    - Admins can delete any quotation
+    - All quotation items are automatically deleted (CASCADE)
+    
+    **Response includes:**
+    - `quotation_id`: ID of the deleted quotation
+    - `deleted_at`: Timestamp of deletion
+    - `deleted_by`: Who deleted the quotation ("owner" or "admin")
+    """
+    try:
+        # Initialize database managers
+        db_manager = EnhancedDatabaseManager()
+        quotation_manager = QuotationManager(db_manager)
+        
+        # Get quotation to verify ownership
+        quotation = quotation_manager.get_quotation(quotation_id)
+        if not quotation:
+            raise HTTPException(status_code=404, detail="Quotation not found")
+        
+        # Check if user owns the quotation or if they're an admin
+        if quotation.get('user_id') != current_user['id'] and current_user.get('role') != 'admin':
+            raise HTTPException(
+                status_code=403, 
+                detail="You can only delete your own quotations unless you're an admin"
+            )
+        
+        # Delete the quotation (items will be deleted automatically due to CASCADE)
+        success = quotation_manager.delete_quotation(quotation_id)
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to delete quotation")
+        
+        # Determine success message based on who is deleting the quotation
+        if quotation.get('user_id') == current_user['id']:
+            message = "Quotation deleted successfully"
+        else:
+            message = f"Quotation deleted successfully by admin"
+        
+        return {
+            "success": True,
+            "message": message,
+            "data": {
+                "quotation_id": quotation_id,
+                "deleted_at": datetime.now().isoformat(),
+                "deleted_by": "admin" if current_user.get('role') == 'admin' and quotation.get('user_id') != current_user['id'] else "owner"
+            }
+        }
+        
     except HTTPException:
         raise
     except Exception as e:
