@@ -581,3 +581,63 @@ class UserAuthManager:
                 result[role] = count
             
             return result
+    
+    def get_user_signups_by_5day_periods(self, start_date: str, end_date: str) -> List[Dict]:
+        """Get user signups grouped by 5-day periods within date range"""
+        with self.auth_db.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Get daily signups for contractors and estimators within date range
+            cursor.execute('''
+                SELECT 
+                    DATE(created_at) as signup_date,
+                    role,
+                    COUNT(*) as signup_count
+                FROM users 
+                WHERE created_at >= ? 
+                AND created_at <= ? 
+                AND role IN ('contractor', 'estimator')
+                GROUP BY DATE(created_at), role
+                ORDER BY signup_date ASC, role ASC
+            ''', (start_date, end_date))
+            
+            rows = cursor.fetchall()
+            
+            # Process the data into 5-day periods
+            from datetime import datetime, timedelta
+            
+            start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+            end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+            
+            # Create 5-day periods
+            periods = []
+            current_dt = start_dt
+            
+            while current_dt <= end_dt:
+                period_end = min(current_dt + timedelta(days=4), end_dt)
+                period_start_str = current_dt.strftime('%Y-%m-%d')
+                period_end_str = period_end.strftime('%Y-%m-%d')
+                
+                # Get signups for this 5-day period
+                period_contractors = 0
+                period_estimators = 0
+                
+                for row in rows:
+                    signup_date_str, role, count = row
+                    signup_date = datetime.strptime(signup_date_str, '%Y-%m-%d')
+                    
+                    if current_dt <= signup_date <= period_end:
+                        if role == 'contractor':
+                            period_contractors += count
+                        elif role == 'estimator':
+                            period_estimators += count
+                
+                periods.append({
+                    'date': period_start_str,
+                    'contractor': period_contractors,
+                    'estimator': period_estimators
+                })
+                
+                current_dt += timedelta(days=5)
+            
+            return periods

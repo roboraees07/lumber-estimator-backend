@@ -3465,8 +3465,12 @@ async def get_admin_dashboard_signups(
         auth_db = AuthDatabaseManager()
         auth_manager = UserAuthManager(auth_db)
         
-        # Get signup data
-        signup_data = auth_manager.get_user_signups_by_date_range(start_date, end_date)
+        # Get signup data grouped by 5-day periods
+        signup_periods = auth_manager.get_user_signups_by_5day_periods(start_date, end_date)
+        
+        # Calculate totals for the entire period
+        total_contractors = sum(period['contractor'] for period in signup_periods)
+        total_estimators = sum(period['estimator'] for period in signup_periods)
         
         return {
             "success": True,
@@ -3475,9 +3479,12 @@ async def get_admin_dashboard_signups(
                     "start_date": start_date,
                     "end_date": end_date
                 },
-                "contractors": signup_data.get('contractor', 0),
-                "estimators": signup_data.get('estimator', 0),
-                "total": signup_data.get('contractor', 0) + signup_data.get('estimator', 0)
+                "periods": signup_periods,
+                "totals": {
+                    "contractors": total_contractors,
+                    "estimators": total_estimators,
+                    "total": total_contractors + total_estimators
+                }
             }
         }
         
