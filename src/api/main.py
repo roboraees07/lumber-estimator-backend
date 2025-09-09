@@ -4,7 +4,7 @@ FastAPI Application for Lumber Estimator
 Provides REST API endpoints for all functionality
 """
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from pydantic import BaseModel
@@ -33,7 +33,7 @@ from ..core.accuracy_calculator import get_accuracy_calculator
 from .contractor_management import router as contractor_router
 from .contractor_dashboard import router as dashboard_router
 from .auth import router as auth_router
-from .auth import get_current_user, ApprovalRequest, ProjectActionRequest
+from .auth import get_current_user, UserApprovalRequest, QuotationApprovalRequest, ProjectActionRequest
 from .test_endpoints import router as test_router
 
 # Request models for manual item addition
@@ -3150,7 +3150,7 @@ async def get_admin_contractors_dashboard(
 @app.put("/admin/quotations/{quotation_id}/action", response_model=Dict[str, Any])
 async def quotation_action(
     quotation_id: int,
-    action_request: ApprovalRequest,
+    action_request: QuotationApprovalRequest,
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
     """Approve or reject a quotation (Admin only)"""
@@ -3329,6 +3329,193 @@ async def get_admin_estimators_dashboard(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch estimator dashboard data: {str(e)}")
 
+@app.get("/admin/dashboard/stats", response_model=Dict[str, Any])
+async def get_admin_dashboard_stats(
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Get dashboard statistics for admin panel"""
+    try:
+        # Check if user is admin
+        if current_user.get("role") != "admin":
+            raise HTTPException(
+                status_code=403, 
+                detail="Only admins can access dashboard statistics"
+            )
+        
+        # Initialize database managers
+        from src.database.auth_models import AuthDatabaseManager, UserAuthManager
+        auth_db = AuthDatabaseManager()
+        auth_manager = UserAuthManager(auth_db)
+        
+        db_manager = EnhancedDatabaseManager()
+        project_manager = ProjectManager(db_manager)
+        quotation_manager = QuotationManager(db_manager)
+        
+        # Get all dashboard statistics
+        pending_requests = auth_manager.get_pending_requests_count()
+        total_active_users = auth_manager.get_active_users_count()
+        
+        # Get current month date range
+        from datetime import datetime, timedelta
+        now = datetime.now()
+        start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        end_of_month = now.replace(day=1, month=now.month+1, hour=0, minute=0, second=0, microsecond=0) if now.month < 12 else now.replace(year=now.year+1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        
+        start_date = start_of_month.strftime('%Y-%m-%d')
+        end_date = (end_of_month - timedelta(days=1)).strftime('%Y-%m-%d')
+        
+        estimates_created_this_month = project_manager.get_projects_created_in_date_range(start_date, end_date)
+        quotations_added_this_month = quotation_manager.get_quotations_created_in_date_range(start_date, end_date)
+        
+        return {
+            "success": True,
+            "data": {
+                "pending_requests": pending_requests,
+                "total_active_users": total_active_users,
+                "estimates_created_this_month": estimates_created_this_month,
+                "quotations_added_this_month": quotations_added_this_month
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch dashboard statistics: {str(e)}")
+
+@app.get("/admin/dashboard/signups", response_model=Dict[str, Any])
+async def get_admin_dashboard_signups(
+    start_date: str = Query(..., description="Start date in YYYY-MM-DD format"),
+    end_date: str = Query(..., description="End date in YYYY-MM-DD format"),
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Get user signups data for admin dashboard chart"""
+    try:
+        # Check if user is admin
+        if current_user.get("role") != "admin":
+            raise HTTPException(
+                status_code=403, 
+                detail="Only admins can access dashboard signups data"
+            )
+        
+        # Validate date format
+        from datetime import datetime
+        try:
+            start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+            end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid date format. Use YYYY-MM-DD format"
+            )
+        
+        # Validate date range
+        if start_dt > end_dt:
+            raise HTTPException(
+                status_code=400,
+                detail="Start date must be before or equal to end date"
+            )
+        
+        # Check if date range is not too large (max 90 days)
+        if (end_dt - start_dt).days > 90:
+            raise HTTPException(
+                status_code=400,
+                detail="Date range cannot exceed 90 days"
+            )
+        
+        # Initialize database managers
+        from src.database.auth_models import AuthDatabaseManager, UserAuthManager
+        auth_db = AuthDatabaseManager()
+        auth_manager = UserAuthManager(auth_db)
+        
+        # Get signup data
+        signup_data = auth_manager.get_user_signups_by_date_range(start_date, end_date)
+        
+        return {
+            "success": True,
+            "data": {
+                "date_range": {
+                    "start_date": start_date,
+                    "end_date": end_date
+                },
+                "contractors": signup_data.get('contractor', 0),
+                "estimators": signup_data.get('estimator', 0),
+                "total": signup_data.get('contractor', 0) + signup_data.get('estimator', 0)
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch signups data: {str(e)}")
+
+@app.get("/admin/dashboard/activity", response_model=Dict[str, Any])
+async def get_admin_dashboard_activity(
+    start_date: str = Query(..., description="Start date in YYYY-MM-DD format"),
+    end_date: str = Query(..., description="End date in YYYY-MM-DD format"),
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Get projects and quotations activity data for admin dashboard"""
+    try:
+        # Check if user is admin
+        if current_user.get("role") != "admin":
+            raise HTTPException(
+                status_code=403, 
+                detail="Only admins can access dashboard activity data"
+            )
+        
+        # Validate date format
+        from datetime import datetime
+        try:
+            start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+            end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid date format. Use YYYY-MM-DD format"
+            )
+        
+        # Validate date range
+        if start_dt > end_dt:
+            raise HTTPException(
+                status_code=400,
+                detail="Start date must be before or equal to end date"
+            )
+        
+        # Check if date range is not too large (max 90 days)
+        if (end_dt - start_dt).days > 90:
+            raise HTTPException(
+                status_code=400,
+                detail="Date range cannot exceed 90 days"
+            )
+        
+        # Initialize database managers
+        from src.database.enhanced_models import EnhancedDatabaseManager, ProjectManager, QuotationManager
+        db_manager = EnhancedDatabaseManager()
+        project_manager = ProjectManager(db_manager)
+        quotation_manager = QuotationManager(db_manager)
+        
+        # Get activity data
+        projects_created = project_manager.get_projects_created_in_date_range(start_date, end_date)
+        quotations_created = quotation_manager.get_quotations_created_in_date_range(start_date, end_date)
+        
+        return {
+            "success": True,
+            "data": {
+                "date_range": {
+                    "start_date": start_date,
+                    "end_date": end_date
+                },
+                "projects_created": projects_created,
+                "quotations_created": quotations_created,
+                "total": projects_created + quotations_created
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch activity data: {str(e)}")
+
 @app.get("/admin/quotations", response_model=Dict[str, Any])
 async def get_admin_quotations_dashboard(
     search: Optional[str] = None,
@@ -3407,7 +3594,7 @@ async def get_admin_estimator_projects(
             )
         
         # Validate status filter if provided
-        valid_statuses = ['pending', 'planning', 'active', 'completed', 'cancelled', 'estimate_submitted']
+        valid_statuses = ['pending', 'approved', 'rejected']
         if status and status not in valid_statuses:
             raise HTTPException(
                 status_code=400, 
@@ -3424,11 +3611,13 @@ async def get_admin_estimator_projects(
         # Format response
         formatted_projects = []
         for project in projects:
-            # Extract SKUs from analysis data if available
+            # Extract SKUs and count items from analysis data if available
             skus = []
+            item_count = 0
             if project.get('analysis_data') and isinstance(project['analysis_data'], dict):
                 detailed_items = project['analysis_data'].get('detailed_items', [])
                 skus = [item.get('sku', '') for item in detailed_items if item.get('sku')]
+                item_count = len(detailed_items)
             
             formatted_projects.append({
                 "project_id": project['id'],
@@ -3441,6 +3630,7 @@ async def get_admin_estimator_projects(
                 "client_name": project.get('client_name'),
                 "client_contact": project.get('client_contact'),
                 "skus": skus,
+                "item_count": item_count,
                 "created_at": project.get('created_at'),
                 "updated_at": project.get('updated_at')
             })

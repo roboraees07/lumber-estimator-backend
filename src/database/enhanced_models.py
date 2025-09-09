@@ -1144,6 +1144,42 @@ class ProjectManager:
                 estimators.append(formatted_estimator)
             
             return estimators
+    
+    def get_estimates_created_this_month(self) -> int:
+        """Get count of projects created by estimators this month"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Check if user_id column exists in projects table
+            cursor.execute("PRAGMA table_info(projects)")
+            columns_info = cursor.fetchall()
+            column_names = [col[1] for col in columns_info]
+            
+            if 'user_id' not in column_names:
+                # If user_id column doesn't exist, return 0
+                return 0
+            
+            # Get current month's projects created by estimators
+            cursor.execute('''
+                SELECT COUNT(*) 
+                FROM projects p
+                JOIN users u ON p.user_id = u.id
+                WHERE u.role = 'estimator' 
+                AND strftime('%Y-%m', p.created_at) = strftime('%Y-%m', 'now')
+            ''')
+            
+            return cursor.fetchone()[0]
+    
+    def get_projects_created_in_date_range(self, start_date: str, end_date: str) -> int:
+        """Get count of projects created within date range"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT COUNT(*)
+                FROM projects
+                WHERE created_at >= ? AND created_at <= ?
+            ''', (start_date, end_date))
+            return cursor.fetchone()[0]
 
 
 class QuotationManager:
@@ -1548,6 +1584,33 @@ class QuotationManager:
                 base_query += ' WHERE ' + ' AND '.join(where_conditions)
             
             cursor.execute(base_query, params)
+            return cursor.fetchone()[0]
+    
+    def get_quotations_added_this_month(self) -> int:
+        """Get count of quotations added by contractors this month"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Get current month's quotations created by contractors
+            cursor.execute('''
+                SELECT COUNT(*) 
+                FROM quotations q
+                JOIN users u ON q.user_id = u.id
+                WHERE u.role = 'contractor' 
+                AND strftime('%Y-%m', q.created_at) = strftime('%Y-%m', 'now')
+            ''')
+            
+            return cursor.fetchone()[0]
+    
+    def get_quotations_created_in_date_range(self, start_date: str, end_date: str) -> int:
+        """Get count of quotations created within date range"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT COUNT(*)
+                FROM quotations
+                WHERE created_at >= ? AND created_at <= ?
+            ''', (start_date, end_date))
             return cursor.fetchone()[0]
 
     def update_quotation_status(self, quotation_id: int, admin_id: int, action: str, rejection_reason: str = None) -> bool:

@@ -58,7 +58,12 @@ class UserProfileUpdate(BaseModel):
     state: Optional[str] = None
     zip_code: Optional[str] = None
 
-class ApprovalRequest(BaseModel):
+class UserApprovalRequest(BaseModel):
+    user_id: int
+    approved: bool
+    rejection_reason: Optional[str] = None
+
+class QuotationApprovalRequest(BaseModel):
     quotation_id: int
     approved: bool
     rejection_reason: Optional[str] = None
@@ -259,7 +264,7 @@ async def get_pending_approvals(admin_user: Dict[str, Any] = Depends(get_admin_u
 
 @router.post("/approve-user", response_model=Dict[str, Any])
 async def approve_user_account(
-    approval_request: ApprovalRequest,
+    approval_request: UserApprovalRequest,
     admin_user: Dict[str, Any] = Depends(get_admin_user)
 ):
     """Approve or reject user account (Admin only)"""
@@ -366,7 +371,7 @@ async def get_user_details(
 @router.put("/users/{user_id}/action", response_model=Dict[str, Any])
 async def user_action(
     user_id: int,
-    action_request: ApprovalRequest,
+    action_request: UserApprovalRequest,
     admin_user: Dict[str, Any] = Depends(get_admin_user)
 ):
     """Approve or reject a user account (Admin only)"""

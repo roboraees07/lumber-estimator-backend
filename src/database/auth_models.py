@@ -540,3 +540,44 @@ class UserAuthManager:
             
             conn.commit()
             return cursor.rowcount > 0
+    
+    def get_pending_requests_count(self) -> int:
+        """Get count of pending user signups waiting for approval"""
+        with self.auth_db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(*) FROM users WHERE account_status = ?', ('pending',))
+            return cursor.fetchone()[0]
+    
+    def get_active_users_count(self) -> int:
+        """Get count of all approved users"""
+        with self.auth_db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(*) FROM users WHERE account_status = ?', ('approved',))
+            return cursor.fetchone()[0]
+    
+    def get_user_signups_by_date_range(self, start_date: str, end_date: str) -> Dict[str, int]:
+        """Get total user signups by role within date range"""
+        with self.auth_db.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Get total signups for contractors and estimators within date range
+            cursor.execute('''
+                SELECT 
+                    role,
+                    COUNT(*) as signup_count
+                FROM users 
+                WHERE created_at >= ? 
+                AND created_at <= ? 
+                AND role IN ('contractor', 'estimator')
+                GROUP BY role
+            ''', (start_date, end_date))
+            
+            rows = cursor.fetchall()
+            
+            # Process the data into a simple format
+            result = {'contractor': 0, 'estimator': 0}
+            for row in rows:
+                role, count = row
+                result[role] = count
+            
+            return result
