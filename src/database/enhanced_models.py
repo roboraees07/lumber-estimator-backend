@@ -1145,6 +1145,110 @@ class ProjectManager:
             
             return estimators
     
+    def get_all_estimators_with_project_stats(self, search: Optional[str] = None) -> List[Dict]:
+        """Get all estimators with their project statistics, including those with 0 projects"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # First, get all estimators (not just approved ones)
+            base_query = '''
+                SELECT 
+                    u.id as estimator_id,
+                    u.first_name,
+                    u.last_name,
+                    u.username,
+                    u.company_name,
+                    u.email,
+                    u.created_at,
+                    u.account_status
+                FROM users u
+                WHERE u.role = 'estimator'
+            '''
+            
+            params = []
+            
+            # Add search filter if provided
+            if search:
+                search_param = f'%{search}%'
+                base_query += ' AND (u.first_name LIKE ? OR u.last_name LIKE ? OR u.username LIKE ? OR u.company_name LIKE ?)'
+                params.extend([search_param, search_param, search_param, search_param])
+            
+            base_query += ' ORDER BY u.created_at DESC'
+            
+            cursor.execute(base_query, params)
+            estimator_rows = cursor.fetchall()
+            
+            estimators = []
+            for row in estimator_rows:
+                estimator_id = row[0]
+                
+                # Get project statistics for this estimator
+                cursor.execute('''
+                    SELECT 
+                        COUNT(p.id) as total_projects,
+                        SUM(CASE WHEN p.status = 'pending' THEN 1 ELSE 0 END) as pending_projects,
+                        SUM(CASE WHEN p.status = 'rejected' THEN 1 ELSE 0 END) as rejected_projects,
+                        SUM(CASE WHEN p.status = 'active' THEN 1 ELSE 0 END) as active_projects,
+                        COALESCE(SUM(p.total_cost), 0) as total_project_value
+                    FROM projects p
+                    WHERE p.user_id = ?
+                ''', (estimator_id,))
+                
+                stats = cursor.fetchone()
+                
+                # Format the estimator data
+                formatted_estimator = {
+                    'id': estimator_id,
+                    'name': f"{row[1] or ''} {row[2] or ''}".strip() or row[3],
+                    'company_name': row[4],
+                    'email': row[5],
+                    'total_projects': stats[0] or 0,
+                    'pending_projects': stats[1] or 0,
+                    'rejected_projects': stats[2] or 0,
+                    'active_projects': stats[3] or 0,
+                    'total_project_value': stats[4] or 0,
+                    'created_at': row[6],
+                    'account_status': row[7]
+                }
+                estimators.append(formatted_estimator)
+            
+            return estimators
+    
+    def debug_get_all_estimators(self) -> List[Dict]:
+        """Debug method to see all estimators in the database"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Get all users with estimator role
+            cursor.execute('''
+                SELECT 
+                    u.id,
+                    u.username,
+                    u.first_name,
+                    u.last_name,
+                    u.role,
+                    u.account_status,
+                    u.created_at
+                FROM users u
+                WHERE u.role = 'estimator'
+                ORDER BY u.created_at DESC
+            ''')
+            
+            rows = cursor.fetchall()
+            estimators = []
+            for row in rows:
+                estimators.append({
+                    'id': row[0],
+                    'username': row[1],
+                    'first_name': row[2],
+                    'last_name': row[3],
+                    'role': row[4],
+                    'account_status': row[5],
+                    'created_at': row[6]
+                })
+            
+            return estimators
+    
     def get_estimates_created_this_month(self) -> int:
         """Get count of projects created by estimators this month"""
         with self.db.get_connection() as conn:
@@ -1180,7 +1284,7 @@ class ProjectManager:
                 WHERE created_at >= ? AND created_at <= ?
             ''', (start_date, end_date))
             return cursor.fetchone()[0]
-
+                                                                                                                     
 
 class QuotationManager:
     def __init__(self, db_manager: EnhancedDatabaseManager):

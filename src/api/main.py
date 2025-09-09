@@ -1478,12 +1478,14 @@ async def get_project(project_id: int, current_user: Dict[str, Any] = Depends(ge
     - Project documentation and records
     """
     try:
-        # Check if user owns this project
+        # Check access permissions
         user_id = current_user.get("id")
+        user_role = current_user.get("role")
         if not user_id:
             raise HTTPException(status_code=400, detail="User ID not found in token")
         
-        if not project_manager.user_owns_project(user_id, project_id):
+        # Admin can view any project, others can only view their own
+        if user_role != "admin" and not project_manager.user_owns_project(user_id, project_id):
             raise HTTPException(status_code=403, detail="Access denied. You can only view your own projects.")
         
         # Get project with manual items included
@@ -3309,8 +3311,8 @@ async def get_admin_estimators_dashboard(
         db_manager = EnhancedDatabaseManager()
         project_manager = ProjectManager(db_manager)
         
-        # Get estimator project statistics with optional search
-        estimators = project_manager.get_estimator_project_stats(search)
+        # Get all estimators with project statistics (including those with 0 projects)
+        estimators = project_manager.get_all_estimators_with_project_stats(search)
         
         # Calculate total count
         total_count = len(estimators)
@@ -3328,6 +3330,42 @@ async def get_admin_estimators_dashboard(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch estimator dashboard data: {str(e)}")
+
+@app.get("/admin/estimators/debug", response_model=Dict[str, Any])
+async def debug_admin_estimators(
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Debug endpoint to see all estimators in database"""
+    try:
+        # Check if user is admin
+        if current_user.get("role") != "admin":
+            raise HTTPException(
+                status_code=403, 
+                detail="Only admins can access debug information"
+            )
+        
+        # Initialize database managers
+        db_manager = EnhancedDatabaseManager()
+        project_manager = ProjectManager(db_manager)
+        
+        # Get debug information
+        all_estimators = project_manager.debug_get_all_estimators()
+        estimators_with_stats = project_manager.get_all_estimators_with_project_stats()
+        
+        return {
+            "success": True,
+            "debug_info": {
+                "all_estimators_in_db": all_estimators,
+                "estimators_with_stats": estimators_with_stats,
+                "count_all_estimators": len(all_estimators),
+                "count_with_stats": len(estimators_with_stats)
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch debug information: {str(e)}")
 
 @app.get("/admin/dashboard/stats", response_model=Dict[str, Any])
 async def get_admin_dashboard_stats(
@@ -3614,10 +3652,21 @@ async def get_admin_estimator_projects(
             # Extract SKUs and count items from analysis data if available
             skus = []
             item_count = 0
+            available_items = 0
+            quotation_needed_items = 0
+            
             if project.get('analysis_data') and isinstance(project['analysis_data'], dict):
                 detailed_items = project['analysis_data'].get('detailed_items', [])
                 skus = [item.get('sku', '') for item in detailed_items if item.get('sku')]
                 item_count = len(detailed_items)
+                
+                # Count available and quotation needed items based on database_match
+                for item in detailed_items:
+                    db_match = item.get('database_match', 'Unknown')
+                    if db_match == 'Available':
+                        available_items += 1
+                    elif db_match == 'Quotation needed':
+                        quotation_needed_items += 1
             
             formatted_projects.append({
                 "project_id": project['id'],
@@ -3631,6 +3680,8 @@ async def get_admin_estimator_projects(
                 "client_contact": project.get('client_contact'),
                 "skus": skus,
                 "item_count": item_count,
+                "available_items": available_items,
+                "quotation_needed_items": quotation_needed_items,
                 "created_at": project.get('created_at'),
                 "updated_at": project.get('updated_at')
             })
