@@ -69,7 +69,6 @@ class ProjectActionRequest(BaseModel):
     rejection_reason: Optional[str] = None
 
 class PasswordChangeRequest(BaseModel):
-    user_id: int
     new_password: str
     confirm_password: str
 
@@ -212,7 +211,7 @@ async def change_password(
     password_data: PasswordChangeRequest,
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
-    """Change user password - works for both self-service and admin password resets"""
+    """Change current user's password"""
     try:
         # Validate new password length
         if len(password_data.new_password) < 6:
@@ -228,15 +227,8 @@ async def change_password(
                 detail="New password and confirm password do not match"
             )
         
-        # Check if user is trying to change their own password or if they're an admin
-        if password_data.user_id != current_user['id'] and current_user.get('role') != 'admin':
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You can only change your own password unless you're an admin"
-            )
-        
-        # Update password (no current password verification needed)
-        success = auth_manager.update_password(password_data.user_id, password_data.new_password)
+        # Update password using user ID from token
+        success = auth_manager.update_password(current_user['id'], password_data.new_password)
         
         if not success:
             raise HTTPException(
@@ -244,11 +236,7 @@ async def change_password(
                 detail="User not found"
             )
         
-        # Determine success message based on who is changing the password
-        if password_data.user_id == current_user['id']:
-            message = "Your password has been updated successfully"
-        else:
-            message = f"Password updated successfully for user ID {password_data.user_id}"
+        message = "Your password has been updated successfully"
         
         return {
             "success": True,
@@ -262,6 +250,7 @@ async def change_password(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Password update failed: {str(e)}"
         )
+
 
 @router.get("/pending-approvals", response_model=List[Dict[str, Any]])
 async def get_pending_approvals(admin_user: Dict[str, Any] = Depends(get_admin_user)):
