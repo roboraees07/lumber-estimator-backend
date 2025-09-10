@@ -3650,6 +3650,18 @@ async def get_admin_estimator_projects(
         db_manager = EnhancedDatabaseManager()
         project_manager = ProjectManager(db_manager)
         
+        # Get estimator information
+        from src.database.auth_models import AuthDatabaseManager, UserAuthManager
+        auth_db = AuthDatabaseManager()
+        auth_manager = UserAuthManager(auth_db)
+        estimator_info = auth_manager.get_user_by_id(estimator_id)
+        
+        if not estimator_info:
+            raise HTTPException(
+                status_code=404, 
+                detail="Estimator not found"
+            )
+        
         # Get projects for the estimator
         projects = project_manager.get_projects_by_user(estimator_id, status)
         
@@ -3693,11 +3705,19 @@ async def get_admin_estimator_projects(
                 "updated_at": project.get('updated_at')
             })
         
+        # Format estimator name
+        first_name = estimator_info.get('first_name', '')
+        last_name = estimator_info.get('last_name', '')
+        estimator_name = f"{first_name} {last_name}".strip()
+        if not estimator_name:
+            estimator_name = estimator_info.get('username', f"User {estimator_id}")
+        
         return {
             "success": True,
             "message": "Estimator projects retrieved successfully",
             "data": {
                 "estimator_id": estimator_id,
+                "estimator_name": estimator_name,
                 "projects": formatted_projects,
                 "total_projects": len(formatted_projects),
                 "status_filter": status
