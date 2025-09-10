@@ -3630,13 +3630,14 @@ async def get_admin_estimator_projects(
     status: Optional[str] = None,
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
-    """Get projects for a specific estimator with optional status filter (Admin only)"""
+    """Get projects for a specific estimator with optional status filter (Admin and Contractor access)"""
     try:
-        # Check if user is admin
-        if current_user.get("role") != "admin":
+        # Check if user is admin or contractor
+        user_role = current_user.get("role")
+        if user_role not in ["admin", "contractor"]:
             raise HTTPException(
                 status_code=403, 
-                detail="Only admins can access estimator projects"
+                detail="Only admins and contractors can access estimator projects"
             )
         
         # Validate status filter if provided
