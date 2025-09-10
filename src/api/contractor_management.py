@@ -1177,6 +1177,139 @@ async def add_item_to_quotation(quotation_id: int, item: QuotationItemCreate):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.delete(
+    "/quotations/{quotation_id}/items/{item_id}",
+    response_model=dict,
+    summary="🗑️ Delete Quotation Item",
+    description="Delete a specific item from a quotation. Only the quotation owner can delete items from their quotations.",
+    response_description="Item deleted successfully",
+    responses={
+        200: {
+            "description": "Item deleted successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "success": True,
+                        "message": "Item deleted from quotation successfully",
+                        "data": {
+                            "item_id": 789,
+                            "quotation_id": 123,
+                            "deleted_at": "2024-01-15T10:30:00",
+                            "updated_quotation_total": 500.00
+                        }
+                    }
+                }
+            }
+        },
+        403: {
+            "description": "Access denied - not the quotation owner and not an admin",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "success": False,
+                        "message": "Access denied",
+                        "detail": "You can only delete items from your own quotations unless you're an admin"
+                    }
+                }
+            }
+        },
+        404: {
+            "description": "Item or quotation not found",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "success": False,
+                        "message": "Item not found",
+                        "detail": "Item not found in the specified quotation"
+                    }
+                }
+            }
+        }
+    }
+)
+async def delete_quotation_item(
+    quotation_id: int,
+    item_id: int,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    ## Delete Quotation Item 🗑️
+    
+    Delete a specific item from a quotation. Users can delete items from their own quotations, admins can delete items from any quotation.
+    
+    **Security:**
+    - Only authenticated users can delete quotation items
+    - Users can only delete items from their own quotations
+    - Admins can delete items from any quotation
+    - Quotation total cost is automatically updated after deletion
+    
+    **Response includes:**
+    - `item_id`: ID of the deleted item
+    - `quotation_id`: ID of the quotation the item was removed from
+    - `deleted_at`: Timestamp of deletion
+    - `updated_quotation_total`: New total cost of the quotation after item deletion
+    """
+    try:
+        # Initialize database managers
+        db_manager = EnhancedDatabaseManager()
+        quotation_manager = QuotationManager(db_manager)
+        item_manager = QuotationItemManager(db_manager)
+        
+        # Get quotation to verify ownership
+        quotation = quotation_manager.get_quotation(quotation_id)
+        if not quotation:
+            raise HTTPException(status_code=404, detail="Quotation not found")
+        
+        # Check if user owns the quotation or if they're an admin
+        if quotation.get('user_id') != current_user['id'] and current_user.get('role') != 'admin':
+            raise HTTPException(
+                status_code=403, 
+                detail="You can only delete items from your own quotations unless you're an admin"
+            )
+        
+        # Verify the item exists in this quotation
+        items = item_manager.get_items_by_quotation(quotation_id)
+        item_exists = any(item['id'] == item_id for item in items)
+        
+        if not item_exists:
+            raise HTTPException(
+                status_code=404, 
+                detail="Item not found in the specified quotation"
+            )
+        
+        # Delete the item
+        success = item_manager.delete_item(item_id)
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to delete item")
+        
+        # Get updated quotation total
+        updated_quotation = quotation_manager.get_quotation(quotation_id)
+        updated_total = updated_quotation.get('total_cost', 0) if updated_quotation else 0
+        
+        # Determine success message based on who is deleting the item
+        if quotation.get('user_id') == current_user['id']:
+            message = "Item deleted from quotation successfully"
+        else:
+            message = "Item deleted from quotation successfully by admin"
+        
+        return {
+            "success": True,
+            "message": message,
+            "data": {
+                "item_id": item_id,
+                "quotation_id": quotation_id,
+                "deleted_at": datetime.now().isoformat(),
+                "updated_quotation_total": updated_total,
+                "deleted_by": "admin" if current_user.get('role') == 'admin' and quotation.get('user_id') != current_user['id'] else "owner"
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete(
     "/quotations/{quotation_id}",
     response_model=dict,
     summary="🗑️ Delete Quotation",

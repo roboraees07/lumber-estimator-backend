@@ -3227,13 +3227,14 @@ async def project_action(
     action_request: ProjectActionRequest,
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
-    """Approve or reject an estimator project (Admin only)"""
+    """Approve or reject an estimator project (Admin and Contractor access)"""
     try:
-        # Check if user is admin
-        if current_user.get("role") != "admin":
+        # Check if user is admin or contractor
+        user_role = current_user.get("role")
+        if user_role not in ["admin", "contractor"]:
             raise HTTPException(
                 status_code=403, 
-                detail="Only admins can approve or reject projects"
+                detail="Only admins and contractors can approve or reject projects"
             )
         
         # Validate that project_id in URL matches the one in request body
@@ -3699,8 +3700,10 @@ async def get_admin_estimator_projects(
                 "client_contact": project.get('client_contact'),
                 "skus": skus,
                 "item_count": item_count,
-                "available_items": available_items,
-                "quotation_needed_items": quotation_needed_items,
+                "statuses": {
+                    "available": available_items,
+                    "quotationNeeded": quotation_needed_items
+                },
                 "created_at": project.get('created_at'),
                 "updated_at": project.get('updated_at')
             })
