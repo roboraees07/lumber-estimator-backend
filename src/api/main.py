@@ -1462,6 +1462,11 @@ async def get_project(project_id: int, current_user: Dict[str, Any] = Depends(ge
     - Combined cost calculations (already calculated)
     - Total item counts (already calculated)
     
+    **Access Control:**
+    - **Admins**: Can view any project
+    - **Contractors**: Can view any project
+    - **Estimators**: Can only view their own projects
+    
     **Response Includes:**
     - **Project Info**: Name, description, dates, status
     - **Building Dimensions**: From PDF analysis
@@ -1486,9 +1491,9 @@ async def get_project(project_id: int, current_user: Dict[str, Any] = Depends(ge
         if not user_id:
             raise HTTPException(status_code=400, detail="User ID not found in token")
         
-        # Admin can view any project, others can only view their own
-        if user_role != "admin" and not project_manager.user_owns_project(user_id, project_id):
-            raise HTTPException(status_code=403, detail="Access denied. You can only view your own projects.")
+        # Admin and contractors can view any project, estimators can only view their own
+        if user_role not in ["admin", "contractor"] and not project_manager.user_owns_project(user_id, project_id):
+            raise HTTPException(status_code=403, detail="Access denied. Estimators can only view their own projects.")
         
         # Get project with manual items included
         project = project_manager.get_project(project_id, include_manual_items=True)
