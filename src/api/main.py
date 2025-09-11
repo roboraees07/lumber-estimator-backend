@@ -1291,6 +1291,8 @@ async def get_projects(current_user: Dict[str, Any] = Depends(get_current_user))
         for project in projects:
             # Count total items from analysis data and manual items
             total_items_found = 0
+            available_items = 0
+            quotation_needed_items = 0
             
             # Count items from PDF analysis
             if project.get('analysis_data'):
@@ -1324,6 +1326,17 @@ async def get_projects(current_user: Dict[str, Any] = Depends(get_current_user))
                                 if isinstance(lumber_items, list):
                                     total_items_found += len(lumber_items)
                                     print(f"Project {project.get('name')}: Counted {len(lumber_items)} lumber items")
+                        
+                        # Count available and quotation needed items based on database_match
+                        detailed_items = analysis_data.get('detailed_items', [])
+                        if isinstance(detailed_items, list):
+                            for item in detailed_items:
+                                db_match = item.get('database_match', 'Unknown')
+                                if db_match == 'Available':
+                                    available_items += 1
+                                elif db_match == 'Quotation needed':
+                                    quotation_needed_items += 1
+                                    
                 except Exception as e:
                     print(f"Error parsing analysis data for project {project.get('id')}: {e}")
                     errors_encountered += 1
@@ -1351,7 +1364,7 @@ async def get_projects(current_user: Dict[str, Any] = Depends(get_current_user))
                 pass
             
             # Debug output
-            print(f"Project {project.get('name')}: Total materials count = {total_items_found}")
+            print(f"Project {project.get('name')}: Total materials count = {total_items_found}, Available = {available_items}, Quotation needed = {quotation_needed_items}")
             
             # Track processing
             projects_processed += 1
@@ -1368,6 +1381,10 @@ async def get_projects(current_user: Dict[str, Any] = Depends(get_current_user))
                 "start_date": project.get('start_date'),
                 "end_date": project.get('end_date'),
                 "status": project.get('status'),
+                "statuses": {
+                    "available": available_items,
+                    "quotationNeeded": quotation_needed_items
+                },
                 "client_name": project.get('client_name'),
                 "client_contact": project.get('client_contact'),
                 "materials": total_items_found
@@ -3637,15 +3654,37 @@ async def get_admin_estimator_projects(
     status: Optional[str] = None,
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
-    """Get projects for a specific estimator with optional status filter (Admin and Contractor access)"""
+    """
+    Get projects for a specific estimator with optional status filter.
+    
+    **Access Control:**
+    - **Admins**: Can view any estimator's projects
+    - **Contractors**: Can view any estimator's projects  
+    - **Estimators**: Can only view their own projects (when estimator_id matches their user_id)
+    
+    **Parameters:**
+    - estimator_id: ID of the estimator whose projects to retrieve
+    - status: Optional filter by project status (pending, approved, rejected)
+    
+    **Returns:**
+    - List of projects with detailed information including estimator name, project details, and item counts
+    """
     try:
-        # Check if user is admin or contractor
+        # Check access permissions
         user_role = current_user.get("role")
+        user_id = current_user.get("id")
+        
+        # Admin and contractors can access any estimator's projects
+        # Estimators can only access their own projects
         if user_role not in ["admin", "contractor"]:
-            raise HTTPException(
-                status_code=403, 
-                detail="Only admins and contractors can access estimator projects"
-            )
+            if user_role == "estimator" and user_id == estimator_id:
+                # Estimator accessing their own projects - allowed
+                pass
+            else:
+                raise HTTPException(
+                    status_code=403, 
+                    detail="Access denied. Estimators can only view their own projects."
+                )
         
         # Validate status filter if provided
         valid_statuses = ['pending', 'approved', 'rejected']
@@ -3932,6 +3971,450 @@ async def get_all_estimates(
                 "filters": {
                     "search": search,
                     "status": status
+                }
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/estimator/dashboard", response_model=Dict[str, Any])
+async def get_estimator_dashboard(
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Get estimator dashboard metrics and statistics.
+    
+    **Access Control:**
+    - **Estimators**: Can view their own dashboard metrics
+    - **Admins**: Can view any estimator's dashboard (future enhancement)
+    - **Contractors**: Not allowed (estimator-specific data)
+    
+    **Returns:**
+    - Total projects/estimates by the estimator
+    - Active estimates (approved projects)
+    - Expenses this month (sum of approved projects' total cost)
+    - Number of unique contractors from recommended_contractor field in approved projects
+    - Percentage of active vs total projects
+    """
+    try:
+        # Check if user is an estimator
+        user_role = current_user.get("role")
+        user_id = current_user.get("id")
+        
+        if user_role != "estimator":
+            raise HTTPException(
+                status_code=403, 
+                detail="Access denied. Only estimators can access dashboard metrics."
+            )
+        
+        if not user_id:
+            raise HTTPException(status_code=400, detail="User ID not found in token")
+        
+        # Initialize database managers
+        db_manager = EnhancedDatabaseManager()
+        project_manager = ProjectManager(db_manager)
+        
+        # Get current month start date
+        from datetime import datetime, date
+        today = date.today()
+        month_start = date(today.year, today.month, 1)
+        
+        # 1. Get total projects by the estimator
+        all_projects = project_manager.get_projects_by_user(user_id)
+        total_projects = len(all_projects)
+        
+        # 2. Get active estimates (approved projects)
+        approved_projects = project_manager.get_projects_by_user(user_id, status="approved")
+        active_estimates = len(approved_projects)
+        
+        # 3. Calculate expenses this month (sum of approved projects' total cost)
+        # Filter approved projects created this month
+        monthly_expenses = 0
+        for project in approved_projects:
+            project_date = project.get('created_at')
+            if project_date:
+                # Parse the date string (assuming format: "YYYY-MM-DD HH:MM:SS")
+                try:
+                    project_datetime = datetime.strptime(project_date.split()[0], "%Y-%m-%d").date()
+                    if project_datetime >= month_start:
+                        monthly_expenses += project.get('total_cost', 0)
+                except (ValueError, IndexError):
+                    # If date parsing fails, skip this project
+                    continue
+        
+        # 4. Count number of contractors assigned to approved projects
+        # Get unique contractor names from recommended_contractor field in approved projects
+        contractor_names = set()
+        for project in approved_projects:
+            # Check if project has contractor assignments in analysis_data
+            analysis_data = project.get('analysis_data', {})
+            if isinstance(analysis_data, dict):
+                detailed_items = analysis_data.get('detailed_items', [])
+                for item in detailed_items:
+                    recommended_contractor = item.get('recommended_contractor')
+                    if recommended_contractor and recommended_contractor.strip():
+                        contractor_names.add(recommended_contractor.strip())
+        
+        no_of_contractors = len(contractor_names)
+        
+        # 5. Calculate percentage of active vs total projects
+        if total_projects > 0:
+            percentage = (active_estimates / total_projects) * 100
+        else:
+            percentage = 0
+        
+        return {
+            "success": True,
+            "message": "Estimator dashboard metrics retrieved successfully",
+            "data": {
+                "total_projects": total_projects,
+                "active_estimates": active_estimates,
+                "expenses_this_month": round(monthly_expenses, 2),
+                "no_of_contractors": no_of_contractors,
+                "percentage": round(percentage, 1)
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/estimator/estimate-status", response_model=Dict[str, Any])
+async def get_estimate_status_distribution(
+    startdate: Optional[str] = None,
+    enddate: Optional[str] = None,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Get estimate status distribution for the estimator's dashboard with optional date filtering.
+    
+    **Access Control:**
+    - **Estimators**: Can view their own estimate status distribution
+    - **Admins**: Not allowed (estimator-specific data)
+    - **Contractors**: Not allowed (estimator-specific data)
+    
+    **Parameters:**
+    - startdate: Optional start date filter (YYYY-MM-DD format)
+    - enddate: Optional end date filter (YYYY-MM-DD format)
+    
+    **Returns:**
+    - Count of approved projects (complete) within date range
+    - Count of pending projects (on hold) within date range
+    - Total count for verification
+    - Date range used for filtering
+    """
+    try:
+        # Check if user is an estimator
+        user_role = current_user.get("role")
+        user_id = current_user.get("id")
+        
+        if user_role != "estimator":
+            raise HTTPException(
+                status_code=403, 
+                detail="Access denied. Only estimators can access estimate status distribution."
+            )
+        
+        if not user_id:
+            raise HTTPException(status_code=400, detail="User ID not found in token")
+        
+        # Initialize database managers
+        db_manager = EnhancedDatabaseManager()
+        project_manager = ProjectManager(db_manager)
+        
+        # Parse date parameters if provided
+        from datetime import datetime, date
+        start_date = None
+        end_date = None
+        
+        if startdate:
+            try:
+                start_date = datetime.strptime(startdate, "%Y-%m-%d").date()
+            except ValueError:
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Invalid startdate format. Use YYYY-MM-DD format."
+                )
+        
+        if enddate:
+            try:
+                end_date = datetime.strptime(enddate, "%Y-%m-%d").date()
+            except ValueError:
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Invalid enddate format. Use YYYY-MM-DD format."
+                )
+        
+        # Validate date range
+        if start_date and end_date and start_date > end_date:
+            raise HTTPException(
+                status_code=400, 
+                detail="Start date cannot be after end date."
+            )
+        
+        # Get approved projects (complete)
+        approved_projects = project_manager.get_projects_by_user(user_id, status="approved")
+        
+        # Get pending projects (on hold)
+        pending_projects = project_manager.get_projects_by_user(user_id, status="pending")
+        
+        # Filter projects by date range if provided
+        def filter_by_date_range(projects, start_date, end_date):
+            filtered = []
+            for project in projects:
+                project_date_str = project.get('created_at')
+                if project_date_str:
+                    try:
+                        # Parse the date string (assuming format: "YYYY-MM-DD HH:MM:SS")
+                        project_date = datetime.strptime(project_date_str.split()[0], "%Y-%m-%d").date()
+                        
+                        # Check if project date is within range
+                        if start_date and project_date < start_date:
+                            continue
+                        if end_date and project_date > end_date:
+                            continue
+                        
+                        filtered.append(project)
+                    except (ValueError, IndexError):
+                        # If date parsing fails, skip this project
+                        continue
+                else:
+                    # If no date, skip this project
+                    continue
+            return filtered
+        
+        # Apply date filtering if dates are provided
+        if start_date or end_date:
+            approved_projects = filter_by_date_range(approved_projects, start_date, end_date)
+            pending_projects = filter_by_date_range(pending_projects, start_date, end_date)
+        
+        complete_count = len(approved_projects)
+        on_hold_count = len(pending_projects)
+        
+        # Calculate total for verification
+        total_count = complete_count + on_hold_count
+        
+        # Calculate percentages
+        if total_count > 0:
+            complete_percentage = round(complete_count / total_count, 2)
+            on_hold_percentage = round(on_hold_count / total_count, 2)
+        else:
+            complete_percentage = 0.0
+            on_hold_percentage = 0.0
+        
+        return {
+            "success": True,
+            "message": "Estimate status distribution retrieved successfully",
+            "data": {
+                "complete": complete_count,
+                "on_hold": on_hold_count,
+                "complete_percentage": complete_percentage,
+                "on_hold_percentage": on_hold_percentage,
+                "total": total_count,
+                "date_range": {
+                    "start_date": startdate,
+                    "end_date": enddate
+                }
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/estimator/weekly-accuracy", response_model=Dict[str, Any])
+async def get_weekly_accuracy_data(
+    startdate: str,
+    enddate: str,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Get weekly accuracy data for the estimator's dashboard.
+    
+    **Access Control:**
+    - **Estimators**: Can view their own weekly accuracy data
+    - **Admins**: Not allowed (estimator-specific data)
+    - **Contractors**: Not allowed (estimator-specific data)
+    
+    **Parameters:**
+    - startdate: Start date for the range (YYYY-MM-DD format) - Required
+    - enddate: End date for the range (YYYY-MM-DD format) - Required
+    
+    **Returns:**
+    - Weekly accuracy data with average accuracy for each week
+    - Week-by-week breakdown of project accuracy
+    - Date range and week information
+    """
+    try:
+        # Check if user is an estimator
+        user_role = current_user.get("role")
+        user_id = current_user.get("id")
+        
+        if user_role != "estimator":
+            raise HTTPException(
+                status_code=403, 
+                detail="Access denied. Only estimators can access weekly accuracy data."
+            )
+        
+        if not user_id:
+            raise HTTPException(status_code=400, detail="User ID not found in token")
+        
+        # Parse and validate date parameters
+        from datetime import datetime, date, timedelta
+        try:
+            start_date = datetime.strptime(startdate, "%Y-%m-%d").date()
+            end_date = datetime.strptime(enddate, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(
+                status_code=400, 
+                detail="Invalid date format. Use YYYY-MM-DD format."
+            )
+        
+        if start_date > end_date:
+            raise HTTPException(
+                status_code=400, 
+                detail="Start date cannot be after end date."
+            )
+        
+        # Initialize database managers
+        db_manager = EnhancedDatabaseManager()
+        project_manager = ProjectManager(db_manager)
+        
+        # Get all projects for the user within the date range
+        all_projects = project_manager.get_projects_by_user(user_id)
+        
+        # Filter projects by date range
+        filtered_projects = []
+        for project in all_projects:
+            project_date_str = project.get('created_at')
+            if project_date_str:
+                try:
+                    project_date = datetime.strptime(project_date_str.split()[0], "%Y-%m-%d").date()
+                    if start_date <= project_date <= end_date:
+                        filtered_projects.append(project)
+                except (ValueError, IndexError):
+                    continue
+        
+        # Calculate total weeks in the date range
+        total_weeks = ((end_date - start_date).days // 7) + 1
+        
+        # Group projects by week
+        weekly_data = {}
+        
+        for project in filtered_projects:
+            project_date_str = project.get('created_at')
+            if project_date_str:
+                try:
+                    project_date = datetime.strptime(project_date_str.split()[0], "%Y-%m-%d").date()
+                    
+                    # Calculate week number within the date range
+                    days_diff = (project_date - start_date).days
+                    week_number = (days_diff // 7) + 1
+                    
+                    # Ensure week number doesn't exceed the total weeks in range
+                    if week_number > total_weeks:
+                        week_number = total_weeks
+                    
+                    if week_number not in weekly_data:
+                        weekly_data[week_number] = {
+                            'week_number': week_number,
+                            'projects': [],
+                            'accuracies': []
+                        }
+                    
+                    weekly_data[week_number]['projects'].append(project)
+                    
+                except (ValueError, IndexError):
+                    continue
+        
+        # Generate all weeks in the date range and calculate accuracy
+        weekly_accuracy_results = []
+        
+        for week_num in range(1, total_weeks + 1):
+            week_start = start_date + timedelta(weeks=week_num-1)
+            week_end = min(week_start + timedelta(days=6), end_date)
+            
+            # Check if this week has projects
+            if week_num in weekly_data:
+                week_data = weekly_data[week_num]
+                week_accuracies = []
+                
+                for project in week_data['projects']:
+                    project_id = project['id']
+                    
+                    try:
+                        # Get project details for accuracy calculation
+                        project_details = project_manager.get_project(project_id)
+                        if not project_details:
+                            continue
+                        
+                        # Create project estimation data for accuracy calculation
+                        project_estimation = {
+                            "project_id": project_id,
+                            "detailed_items": project_details.get('analysis_data', {}).get('detailed_items', []),
+                            "lumber_estimates": project_details.get('analysis_data', {}).get('lumber_estimates', {})
+                        }
+                        
+                        # Calculate accuracy for this project
+                        accuracy_metrics = accuracy_calculator.calculate_estimation_accuracy(project_estimation)
+                        week_accuracies.append(accuracy_metrics.overall_accuracy * 100)
+                        
+                    except Exception as e:
+                        # If accuracy calculation fails for a project, skip it
+                        continue
+                
+                # Calculate average accuracy for the week
+                if week_accuracies:
+                    avg_accuracy = sum(week_accuracies) / len(week_accuracies)
+                    weekly_accuracy_results.append({
+                        'week_number': week_num,
+                        'week_start': week_start.strftime('%Y-%m-%d'),
+                        'week_end': week_end.strftime('%Y-%m-%d'),
+                        'average_accuracy': round(avg_accuracy, 2),
+                        'project_count': len(week_accuracies),
+                        'individual_accuracies': [round(acc, 2) for acc in week_accuracies]
+                    })
+                else:
+                    # Week has projects but no valid accuracy calculations
+                    weekly_accuracy_results.append({
+                        'week_number': week_num,
+                        'week_start': week_start.strftime('%Y-%m-%d'),
+                        'week_end': week_end.strftime('%Y-%m-%d'),
+                        'average_accuracy': 0.0,
+                        'project_count': 0,
+                        'individual_accuracies': []
+                    })
+            else:
+                # Week has no projects
+                weekly_accuracy_results.append({
+                    'week_number': week_num,
+                    'week_start': week_start.strftime('%Y-%m-%d'),
+                    'week_end': week_end.strftime('%Y-%m-%d'),
+                    'average_accuracy': 0.0,
+                    'project_count': 0,
+                    'individual_accuracies': []
+                })
+        
+        return {
+            "success": True,
+            "message": "Weekly accuracy data retrieved successfully",
+            "data": {
+                "date_range": {
+                    "start_date": startdate,
+                    "end_date": enddate,
+                    "total_weeks": total_weeks
+                },
+                "weekly_accuracy": weekly_accuracy_results,
+                "summary": {
+                    "total_projects_analyzed": sum(week['project_count'] for week in weekly_accuracy_results),
+                    "overall_average_accuracy": round(
+                        sum(week['average_accuracy'] * week['project_count'] for week in weekly_accuracy_results) / 
+                        sum(week['project_count'] for week in weekly_accuracy_results), 2
+                    ) if sum(week['project_count'] for week in weekly_accuracy_results) > 0 else 0
                 }
             }
         }
