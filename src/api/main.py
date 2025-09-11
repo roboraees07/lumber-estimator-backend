@@ -3734,6 +3734,208 @@ async def get_admin_estimator_projects(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/estimates/all", response_model=Dict[str, Any])
+async def get_all_estimates(
+    search: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Get all estimates with estimator details (Admin and Contractor access)
+    
+    Search functionality includes:
+    - Project name
+    - Project description  
+    - Estimator first name
+    - Estimator last name
+    - Estimator username
+    - Full estimator name (first + last name)
+    """
+    try:
+        # Check if user is admin or contractor
+        user_role = current_user.get("role")
+        if user_role not in ["admin", "contractor"]:
+            raise HTTPException(
+                status_code=403, 
+                detail="Only admins and contractors can view all estimates"
+            )
+        
+        # Validate status filter if provided
+        valid_statuses = ['pending', 'approved', 'rejected', 'active']
+        if status and status not in valid_statuses:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid status filter. Valid options: {', '.join(valid_statuses)}"
+            )
+        
+        # Initialize database managers
+        db_manager = EnhancedDatabaseManager()
+        project_manager = ProjectManager(db_manager)
+        
+        # Get estimator information manager
+        from src.database.auth_models import AuthDatabaseManager, UserAuthManager
+        auth_db = AuthDatabaseManager()
+        auth_manager = UserAuthManager(auth_db)
+        
+        # Get all projects with user information
+        with db_manager.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Build the base query with user join for search functionality
+            base_query = '''
+                SELECT 
+                    p.id as project_id,
+                    p.name as project_name,
+                    p.description,
+                    p.total_cost,
+                    p.status,
+                    p.created_at,
+                    p.updated_at,
+                    p.user_id as estimator_id,
+                    u.first_name,
+                    u.last_name,
+                    u.username
+                FROM projects p
+                LEFT JOIN users u ON p.user_id = u.id
+                WHERE 1=1
+            '''
+            
+            params = []
+            
+            # Add search filter if provided (now includes user name search)
+            if search:
+                base_query += ''' AND (
+                    p.name LIKE ? OR 
+                    p.description LIKE ? OR 
+                    u.first_name LIKE ? OR 
+                    u.last_name LIKE ? OR 
+                    u.username LIKE ? OR
+                    (u.first_name || ' ' || u.last_name) LIKE ?
+                )'''
+                search_term = f"%{search}%"
+                params.extend([search_term, search_term, search_term, search_term, search_term, search_term])
+            
+            # Add status filter if provided
+            if status:
+                base_query += ' AND p.status = ?'
+                params.append(status)
+            
+            # Add ordering and pagination
+            base_query += ' ORDER BY p.created_at DESC LIMIT ? OFFSET ?'
+            params.extend([limit, offset])
+            
+            cursor.execute(base_query, params)
+            projects = cursor.fetchall()
+            
+            # Get total count for pagination
+            count_query = '''
+                SELECT COUNT(*) as total
+                FROM projects p
+                LEFT JOIN users u ON p.user_id = u.id
+                WHERE 1=1
+            '''
+            count_params = []
+            
+            if search:
+                count_query += ''' AND (
+                    p.name LIKE ? OR 
+                    p.description LIKE ? OR 
+                    u.first_name LIKE ? OR 
+                    u.last_name LIKE ? OR 
+                    u.username LIKE ? OR
+                    (u.first_name || ' ' || u.last_name) LIKE ?
+                )'''
+                search_term = f"%{search}%"
+                count_params.extend([search_term, search_term, search_term, search_term, search_term, search_term])
+            
+            if status:
+                count_query += ' AND p.status = ?'
+                count_params.append(status)
+            
+            cursor.execute(count_query, count_params)
+            total_count = cursor.fetchone()[0]
+        
+        # Format response
+        formatted_estimates = []
+        for project in projects:
+            project_id, project_name, description, total_cost, status, created_at, updated_at, estimator_id, first_name, last_name, username = project
+            
+            # Format estimator name from query results
+            estimator_name = "Unknown"
+            if first_name and last_name:
+                estimator_name = f"{first_name} {last_name}".strip()
+            elif first_name:
+                estimator_name = first_name
+            elif last_name:
+                estimator_name = last_name
+            elif username:
+                estimator_name = username
+            else:
+                estimator_name = f"User {estimator_id}"
+            
+            # Count items from analysis data
+            item_count = 0
+            available_items = 0
+            quotation_needed_items = 0
+            
+            # Get project details to count items
+            project_details = project_manager.get_project(project_id)
+            if project_details and project_details.get('analysis_data'):
+                detailed_items = project_details['analysis_data'].get('detailed_items', [])
+                item_count = len(detailed_items)
+                
+                # Count available and quotation needed items
+                for item in detailed_items:
+                    db_match = item.get('database_match', 'Unknown')
+                    if db_match == 'Available':
+                        available_items += 1
+                    elif db_match == 'Quotation needed':
+                        quotation_needed_items += 1
+            
+            # Add manual items count
+            if project_details and project_details.get('manual_items'):
+                manual_items_count = len(project_details['manual_items'])
+                item_count += manual_items_count
+            
+            formatted_estimates.append({
+                "project_id": project_id,
+                "estimator_name": estimator_name,
+                "estimator_id": estimator_id,
+                "project_name": project_name,
+                "description": description,
+                "material_count": item_count,
+                "total_cost": total_cost or 0,
+                "status": status or 'pending',
+                "created_at": created_at,
+                "updated_at": updated_at,
+                "statuses": {
+                    "available": available_items,
+                    "quotationNeeded": quotation_needed_items
+                }
+            })
+        
+        return {
+            "success": True,
+            "message": "All estimates retrieved successfully",
+            "data": {
+                "estimates": formatted_estimates,
+                "total_count": total_count,
+                "current_page": (offset // limit) + 1,
+                "page_size": limit,
+                "total_pages": (total_count + limit - 1) // limit,
+                "filters": {
+                    "search": search,
+                    "status": status
+                }
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
