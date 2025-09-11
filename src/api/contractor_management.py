@@ -5,7 +5,7 @@ Advanced contractor profiling and item management endpoints
 """
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Query, Depends
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 import json
@@ -13,6 +13,14 @@ import tempfile
 import shutil
 import os
 from datetime import datetime, date
+import pandas as pd
+import xlsxwriter
+from reportlab.lib.pagesizes import letter, A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
 
 from ..database.enhanced_models import EnhancedDatabaseManager, ContractorProfileManager, MaterialItemManager, QuotationManager, QuotationItemManager
 from ..api.auth import get_current_user
@@ -260,9 +268,16 @@ class QuotationItemResponse(BaseModel):
     unit_of_measure: str
     cost: float
     quantity: float
-    total_cost: float
-    description: Optional[str]
-    category: Optional[str]
+
+class QuotationItemUpdate(BaseModel):
+    item_name: Optional[str] = Field(None, description="Name of the item", example="Premium Oak Flooring")
+    sku: Optional[str] = Field(None, description="SKU/Product Code (optional)", example="OAK-PREM-001")
+    unit: Optional[str] = Field(None, description="Unit of measure", example="per sq ft")
+    unit_of_measure: Optional[str] = Field(None, description="Unit of measure description", example="per sq ft, per piece, per hour")
+    cost: Optional[float] = Field(None, description="Cost per unit", example=12.50)
+    quantity: Optional[float] = Field(None, description="Quantity needed", example=100.0)
+    description: Optional[str] = Field(None, description="Additional item description", example="Premium grade oak flooring")
+    category: Optional[str] = Field(None, description="Item category", example="Flooring")
 
 class QuotationCreate(BaseModel):
     quotation_name: Optional[str] = Field(None, description="Name of the quotation")
@@ -1301,6 +1316,182 @@ async def delete_quotation_item(
                 "deleted_at": datetime.now().isoformat(),
                 "updated_quotation_total": updated_total,
                 "deleted_by": "admin" if current_user.get('role') == 'admin' and quotation.get('user_id') != current_user['id'] else "owner"
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.put(
+    "/quotations/items/{item_id}",
+    response_model=dict,
+    summary="✏️ Edit Quotation Item",
+    description="Edit a specific item in a quotation. Only the quotation owner can edit items.",
+    response_description="Item updated successfully",
+    responses={
+        200: {
+            "description": "Item updated successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "success": True,
+                        "message": "Item updated successfully",
+                        "data": {
+                            "item_id": 789,
+                            "quotation_id": 123,
+                            "updated_item": {
+                                "item_id": 789,
+                                "item_name": "Updated Steel Beams",
+                                "sku_id": "STEEL-002",
+                                "unit": "per piece",
+                                "unit_of_measure": "per piece",
+                                "cost": 175.00,
+                                "quantity": 6,
+                                "total_cost": 1050.00
+                            },
+                            "updated_quotation_total": 2000.00,
+                            "updated_at": "2024-01-15T10:30:00"
+                        }
+                    }
+                }
+            }
+        },
+        403: {
+            "description": "Access denied - not the quotation owner and not an admin",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "success": False,
+                        "message": "Access denied",
+                        "detail": "You can only edit items from your own quotations unless you're an admin"
+                    }
+                }
+            }
+        },
+        404: {
+            "description": "Item not found",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "success": False,
+                        "message": "Item not found",
+                        "detail": "Item not found"
+                    }
+                }
+            }
+        }
+    }
+)
+async def edit_quotation_item(
+    item_id: int,
+    item_update: QuotationItemUpdate,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    ## Edit Quotation Item ✏️
+    
+    Edit a specific item in a quotation. Users can edit items from their own quotations, admins can edit items from any quotation.
+    
+    **Security:**
+    - Only authenticated users can edit quotation items
+    - Users can only edit items from their own quotations
+    - Admins can edit items from any quotation
+    - Quotation total cost is automatically updated after editing
+    
+    **Request Body:**
+    - All fields are optional - only provide the fields you want to update
+    - If cost or quantity is updated, total_cost will be automatically recalculated
+    
+    **Response includes:**
+    - `item_id`: ID of the updated item
+    - `quotation_id`: ID of the quotation the item belongs to
+    - `updated_item`: Complete item details after update
+    - `updated_quotation_total`: New total cost of the quotation after item update
+    - `updated_at`: Timestamp of update
+    """
+    try:
+        # Initialize database managers
+        db_manager = EnhancedDatabaseManager()
+        quotation_manager = QuotationManager(db_manager)
+        item_manager = QuotationItemManager(db_manager)
+        
+        # Get the item to verify it exists and get quotation_id
+        item = item_manager.get_item(item_id)
+        if not item:
+            raise HTTPException(status_code=404, detail="Item not found")
+        
+        quotation_id = item.get('quotation_id')
+        
+        # Get quotation to verify ownership
+        quotation = quotation_manager.get_quotation(quotation_id)
+        if not quotation:
+            raise HTTPException(status_code=404, detail="Quotation not found")
+        
+        # Check if user owns the quotation or if they're an admin
+        if quotation.get('user_id') != current_user['id'] and current_user.get('role') != 'admin':
+            raise HTTPException(
+                status_code=403, 
+                detail="You can only edit items from your own quotations unless you're an admin"
+            )
+        
+        # Prepare update data (only include non-None values)
+        update_data = {}
+        for field, value in item_update.dict().items():
+            if value is not None:
+                update_data[field] = value
+        
+        # If no fields to update, return error
+        if not update_data:
+            raise HTTPException(
+                status_code=400, 
+                detail="No fields provided for update"
+            )
+        
+        # Update the item
+        success = item_manager.update_item(item_id, update_data)
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to update item")
+        
+        # Get updated item details
+        updated_item = item_manager.get_item(item_id)
+        if not updated_item:
+            raise HTTPException(status_code=500, detail="Failed to retrieve updated item")
+        
+        # Get updated quotation total
+        updated_quotation = quotation_manager.get_quotation(quotation_id)
+        updated_total = updated_quotation.get('total_cost', 0) if updated_quotation else 0
+        
+        # Format the updated item response
+        formatted_item = {
+            "item_id": updated_item['id'],
+            "item_name": updated_item.get('item_name', ''),
+            "sku_id": updated_item.get('sku', 'N/A'),
+            "unit": updated_item.get('unit', ''),
+            "unit_of_measure": updated_item.get('unit_of_measure', ''),
+            "cost": updated_item.get('cost', 0),
+            "quantity": updated_item.get('quantity', 0),
+            "total_cost": updated_item.get('total_cost', 0)
+        }
+        
+        # Determine success message based on who is updating the item
+        if quotation.get('user_id') == current_user['id']:
+            message = "Item updated successfully"
+        else:
+            message = "Item updated successfully by admin"
+        
+        return {
+            "success": True,
+            "message": message,
+            "data": {
+                "item_id": item_id,
+                "quotation_id": quotation_id,
+                "updated_item": formatted_item,
+                "updated_quotation_total": updated_total,
+                "updated_at": datetime.now().isoformat(),
+                "updated_by": "admin" if current_user.get('role') == 'admin' and quotation.get('user_id') != current_user['id'] else "owner"
             }
         }
         

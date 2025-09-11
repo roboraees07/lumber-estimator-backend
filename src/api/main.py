@@ -35,6 +35,7 @@ from .contractor_dashboard import router as dashboard_router
 from .auth import router as auth_router
 from .auth import get_current_user, UserApprovalRequest, QuotationApprovalRequest, ProjectActionRequest
 from .test_endpoints import router as test_router
+from .export_endpoints import router as export_router
 
 # Request models for manual item addition
 class ManualItemRequest(BaseModel):
@@ -135,6 +136,7 @@ accuracy_calculator = get_accuracy_calculator()
 app.include_router(auth_router)  # Authentication endpoints
 app.include_router(contractor_router)
 app.include_router(dashboard_router)
+app.include_router(export_router)  # Export endpoints
 app.include_router(test_router)  # Test endpoints (no authentication required)
 
 # Manual Item Management Endpoints
