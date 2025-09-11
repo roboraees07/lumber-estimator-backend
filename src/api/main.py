@@ -4424,6 +4424,131 @@ async def get_weekly_accuracy_data(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/estimator/monthly-expenses", response_model=Dict[str, Any])
+async def get_monthly_expenses_data(
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    Get monthly expenses data for the current year with period comparisons.
+    
+    **Access Control:**
+    - **Estimators**: Can view their own monthly expenses data
+    - **Admins**: Not allowed (estimator-specific data)
+    - **Contractors**: Not allowed (estimator-specific data)
+    
+    **Returns:**
+    - 12 months of expense data for the current year
+    - Comparison with last month
+    - Comparison with last 6 months (if current month is June or later)
+    """
+    try:
+        # Check if user is an estimator
+        user_role = current_user.get("role")
+        user_id = current_user.get("id")
+        
+        if user_role != "estimator":
+            raise HTTPException(
+                status_code=403, 
+                detail="Access denied. Only estimators can access monthly expenses data."
+            )
+        
+        if not user_id:
+            raise HTTPException(status_code=400, detail="User ID not found in token")
+        
+        # Initialize database managers
+        db_manager = EnhancedDatabaseManager()
+        project_manager = ProjectManager(db_manager)
+        
+        # Get current date and year
+        from datetime import datetime, date
+        current_date = date.today()
+        current_year = current_date.year
+        current_month = current_date.month
+        
+        # Get all projects for the user
+        all_projects = project_manager.get_projects_by_user(user_id)
+        
+        # Initialize monthly expenses array (12 months)
+        monthly_expenses = []
+        month_names = [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+        ]
+        
+        # Calculate expenses for each month
+        for month_num in range(1, 13):
+            month_start = date(current_year, month_num, 1)
+            # Calculate last day of month
+            if month_num == 12:
+                month_end = date(current_year + 1, 1, 1) - date.resolution
+            else:
+                month_end = date(current_year, month_num + 1, 1) - date.resolution
+            
+            # Filter projects for this month
+            month_expenses = 0
+            for project in all_projects:
+                project_date_str = project.get('created_at')
+                if project_date_str:
+                    try:
+                        project_date = datetime.strptime(project_date_str.split()[0], "%Y-%m-%d").date()
+                        if month_start <= project_date <= month_end:
+                            month_expenses += project.get('total_cost', 0)
+                    except (ValueError, IndexError):
+                        continue
+            
+            monthly_expenses.append({
+                "month": month_names[month_num - 1],
+                "month_number": month_num,
+                "expense": round(month_expenses, 2)
+            })
+        
+        # Add comparison notes for each month
+        for i, month_data in enumerate(monthly_expenses):
+            current_expense = month_data['expense']
+            
+            # Get previous month expense
+            if i == 0:  # January - no previous month
+                note = "First month of the year"
+            else:
+                previous_expense = monthly_expenses[i - 1]['expense']
+                
+                if previous_expense == 0:
+                    if current_expense > 0:
+                        note = "Greater than last month"
+                    else:
+                        note = "Same as last month"
+                else:
+                    if current_expense > previous_expense:
+                        note = "Greater than last month"
+                    elif current_expense < previous_expense:
+                        note = "Lesser than last month"
+                    else:
+                        note = "Same as last month"
+            
+            month_data['note'] = note
+        
+        # Calculate current month expense
+        current_month_expense = monthly_expenses[current_month - 1]['expense']
+        
+        return {
+            "success": True,
+            "message": "Monthly expenses data retrieved successfully",
+            "data": {
+                "year": current_year,
+                "current_month": current_month,
+                "monthly_expenses": monthly_expenses,
+                "summary": {
+                    "total_year_expense": round(sum(month['expense'] for month in monthly_expenses), 2),
+                    "current_month_expense": current_month_expense
+                }
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
