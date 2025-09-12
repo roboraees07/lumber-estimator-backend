@@ -2,9 +2,9 @@ module.exports = {
   apps: [
     {
       name: "lumber-estimator",
-      script: "app.py", 
+      script: "app.py",
       cwd: ".",
-      interpreter: "python3",
+      interpreter: "venv/bin/python",
       env: {
         GEMINI_API_KEY: "AIzaSyBR3dEcLQW_efOA2aItE58e9HN9ZIMj1Xg",
         DATABASE_PATH: "data/lumber_estimator.db",
