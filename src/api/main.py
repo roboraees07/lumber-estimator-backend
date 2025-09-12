@@ -26,6 +26,7 @@ from reportlab.lib.units import inch
 from io import BytesIO
 
 from ..database.enhanced_models import EnhancedDatabaseManager, ContractorProfileManager, MaterialItemManager, ProjectManager, ManualItemsManager, EstimateHistoryManager, QuotationManager
+from ..database.auth_models import AuthDatabaseManager, UserAuthManager
 from ..core.contractor_input import ContractorDataImporter
 from ..core.estimation_engine import EstimationEngine
 from ..core.lumber_estimation_engine import lumber_estimation_engine
@@ -3406,7 +3407,6 @@ async def get_admin_dashboard_stats(
             )
         
         # Initialize database managers
-        from src.database.auth_models import AuthDatabaseManager, UserAuthManager
         auth_db = AuthDatabaseManager()
         auth_manager = UserAuthManager(auth_db)
         
@@ -3486,7 +3486,6 @@ async def get_admin_dashboard_signups(
             )
         
         # Initialize database managers
-        from src.database.auth_models import AuthDatabaseManager, UserAuthManager
         auth_db = AuthDatabaseManager()
         auth_manager = UserAuthManager(auth_db)
         
@@ -3699,7 +3698,6 @@ async def get_admin_estimator_projects(
         project_manager = ProjectManager(db_manager)
         
         # Get estimator information
-        from src.database.auth_models import AuthDatabaseManager, UserAuthManager
         auth_db = AuthDatabaseManager()
         auth_manager = UserAuthManager(auth_db)
         estimator_info = auth_manager.get_user_by_id(estimator_id)
@@ -3818,7 +3816,6 @@ async def get_all_estimates(
         project_manager = ProjectManager(db_manager)
         
         # Get estimator information manager
-        from src.database.auth_models import AuthDatabaseManager, UserAuthManager
         auth_db = AuthDatabaseManager()
         auth_manager = UserAuthManager(auth_db)
         
@@ -4548,6 +4545,326 @@ async def get_monthly_expenses_data(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/contractor/pending-projects")
+async def get_contractor_pending_projects(
+    search: Optional[str] = Query(None, description="Search by project name or estimator name"),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get all projects with pending status for contractors with search functionality.
+    
+    Parameters:
+    - search: Optional search term to filter by project name or estimator name
+    
+    Returns:
+    - project_name: Name of the project
+    - estimator_name: Name of the estimator who created the project
+    - total_items: Total number of items in the estimation
+    - total_cost: Total cost of the project
+    
+    Access: Contractors only
+    """
+    user_id = current_user.get('user_id')
+    user_role = current_user.get('role')
+    
+    # Check if user is a contractor
+    if user_role != 'contractor':
+        raise HTTPException(
+            status_code=403, 
+            detail="Access denied. Only contractors can access this endpoint."
+        )
+    
+    try:
+        # Get all pending projects
+        db_manager = EnhancedDatabaseManager()
+        project_manager = ProjectManager(db_manager)
+        
+        # Get all projects with pending status
+        all_projects = project_manager.get_all_projects()
+        pending_projects = [p for p in all_projects if p.get('status') == 'pending']
+        
+        # Get user info for estimator names
+        auth_db_manager = AuthDatabaseManager()
+        user_auth_manager = UserAuthManager(auth_db_manager)
+        
+        # Process each pending project
+        processed_projects = []
+        for project in pending_projects:
+            # Get estimator info
+            estimator_id = project.get('user_id')
+            estimator_info = None
+            estimator_name = "Unknown Estimator"
+            
+            if estimator_id:
+                estimator_info = user_auth_manager.get_user_by_id(estimator_id)
+                if estimator_info:
+                    estimator_name = f"{estimator_info.get('first_name', '')} {estimator_info.get('last_name', '')}".strip()
+                    if not estimator_name:
+                        estimator_name = estimator_info.get('username', 'Unknown Estimator')
+            
+            # Calculate total items from analysis_data
+            total_items = 0
+            if project.get('analysis_data'):
+                try:
+                    analysis_data = project['analysis_data']
+                    if isinstance(analysis_data, str):
+                        analysis_data = json.loads(analysis_data)
+                    
+                    # Count items from detailed_items
+                    if 'detailed_items' in analysis_data:
+                        total_items = len(analysis_data['detailed_items'])
+                except (json.JSONDecodeError, KeyError, TypeError):
+                    total_items = 0
+            
+            # Get total cost
+            total_cost = project.get('total_cost', 0)
+            
+            project_data = {
+                "project_id": project.get('id'),
+                "project_name": project.get('project_name', 'Unnamed Project'),
+                "estimator_name": estimator_name,
+                "total_items": total_items,
+                "total_cost": total_cost,
+                "created_at": project.get('created_at'),
+                "updated_at": project.get('updated_at')
+            }
+            
+            # Apply search filter if provided
+            if search:
+                search_lower = search.lower()
+                project_name_match = project_data['project_name'].lower().find(search_lower) != -1
+                estimator_name_match = estimator_name.lower().find(search_lower) != -1
+                
+                if project_name_match or estimator_name_match:
+                    processed_projects.append(project_data)
+            else:
+                processed_projects.append(project_data)
+        
+        # Sort by created_at descending (newest first)
+        processed_projects.sort(key=lambda x: x['created_at'], reverse=True)
+        
+        return {
+            "success": True,
+            "message": "Pending projects retrieved successfully",
+            "data": {
+                "contractor_id": user_id,
+                "total_pending_projects": len(processed_projects),
+                "search_term": search,
+                "projects": processed_projects
+            }
+        }
+        
+    except Exception as e:
+        print(f"Error in get_contractor_pending_projects: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve pending projects: {str(e)}"
+        )
+
+@app.get("/contractor/dashboard-overview")
+async def get_contractor_dashboard_overview(
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get contractor dashboard overview with approved vs pending projects metrics.
+    
+    Returns:
+    - approved_projects: Number of projects with approved status
+    - pending_approvals: Number of projects with pending status
+    - active_project_value: Total cost of approved projects
+    - quotation_items: Total number of items in approved projects
+    - approval_percentage: Percentage of approved vs total projects
+    
+    Access: Contractors only
+    """
+    user_id = current_user.get('user_id')
+    user_role = current_user.get('role')
+    
+    # Check if user is a contractor
+    if user_role != 'contractor':
+        raise HTTPException(
+            status_code=403, 
+            detail="Access denied. Only contractors can access this endpoint."
+        )
+    
+    try:
+        # Get all projects
+        db_manager = EnhancedDatabaseManager()
+        project_manager = ProjectManager(db_manager)
+        
+        # Get all projects (estimates done by estimators)
+        all_projects = project_manager.get_all_projects()
+        
+        # Categorize projects by status
+        approved_projects = [p for p in all_projects if p.get('status') == 'approved']
+        pending_projects = [p for p in all_projects if p.get('status') == 'pending']
+        
+        # Calculate metrics
+        approved_count = len(approved_projects)
+        pending_count = len(pending_projects)
+        total_projects = approved_count + pending_count
+        
+        # Calculate total cost of approved projects
+        active_project_value = sum(project.get('total_cost', 0) for project in approved_projects)
+        
+        # Calculate total items in approved projects
+        quotation_items = 0
+        for project in approved_projects:
+            if project.get('analysis_data'):
+                try:
+                    analysis_data = project['analysis_data']
+                    if isinstance(analysis_data, str):
+                        analysis_data = json.loads(analysis_data)
+                    
+                    # Count items from detailed_items
+                    if 'detailed_items' in analysis_data:
+                        quotation_items += len(analysis_data['detailed_items'])
+                except (json.JSONDecodeError, KeyError, TypeError):
+                    continue
+        
+        # Calculate approval percentage
+        if total_projects > 0:
+            approval_percentage = round((approved_count / total_projects) * 100, 1)
+        else:
+            approval_percentage = 0.0
+        
+        return {
+            "success": True,
+            "message": "Contractor dashboard overview retrieved successfully",
+            "data": {
+                "contractor_id": user_id,
+                "approved_projects": approved_count,
+                "pending_approvals": pending_count,
+                "active_project_value": round(active_project_value, 2),
+                "quotation_items": quotation_items,
+                "approval_percentage": approval_percentage,
+                "total_projects": total_projects
+            }
+        }
+        
+    except Exception as e:
+        print(f"Error in get_contractor_dashboard_overview: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve dashboard overview: {str(e)}"
+        )
+
+@app.get("/contractor/monthly-revenue")
+async def get_contractor_monthly_revenue(
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get contractor monthly revenue data for the current year.
+    
+    Returns monthly revenue data for all 12 months (Jan-Dec) with:
+    - Monthly revenue from approved projects
+    - Comparison notes for each month vs previous month
+    - Empty list for months with no revenue
+    
+    Access: Contractors only
+    """
+    user_id = current_user.get('user_id')
+    user_role = current_user.get('role')
+    
+    # Check if user is a contractor
+    if user_role != 'contractor':
+        raise HTTPException(
+            status_code=403, 
+            detail="Access denied. Only contractors can access this endpoint."
+        )
+    
+    try:
+        # Get current year
+        current_year = datetime.now().year
+        current_month = datetime.now().month
+        
+        # Get all projects
+        db_manager = EnhancedDatabaseManager()
+        project_manager = ProjectManager(db_manager)
+        
+        # Get all approved projects (these generate revenue)
+        all_projects = project_manager.get_all_projects()
+        approved_projects = [p for p in all_projects if p.get('status') == 'approved']
+        
+        # Initialize monthly revenue data for all 12 months
+        month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
+                      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+        
+        monthly_revenue = []
+        monthly_costs = [0.0] * 12  # Initialize all months with 0
+        
+        # Calculate revenue for each month
+        for project in approved_projects:
+            created_at = project.get('created_at')
+            if created_at:
+                try:
+                    # Parse the created_at date
+                    if isinstance(created_at, str):
+                        project_date = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S')
+                    else:
+                        project_date = created_at
+                    
+                    # Check if project is from current year
+                    if project_date.year == current_year:
+                        month_index = project_date.month - 1  # Convert to 0-based index
+                        project_cost = project.get('total_cost', 0)
+                        monthly_costs[month_index] += project_cost
+                        
+                except (ValueError, TypeError):
+                    continue
+        
+        # Create monthly revenue data with notes
+        for month_num in range(1, 13):
+            month_expense = monthly_costs[month_num - 1]
+            
+            monthly_revenue.append({
+                "month": month_names[month_num - 1],
+                "month_number": month_num,
+                "revenue": round(month_expense, 2)
+            })
+        
+        # Add comparison notes for each month
+        for i, month_data in enumerate(monthly_revenue):
+            current_revenue = month_data['revenue']
+            
+            # Get previous month revenue
+            if i == 0:  # January - no previous month
+                note = "First month of the year"
+            else:
+                previous_revenue = monthly_revenue[i - 1]['revenue']
+                
+                if previous_revenue == 0:
+                    if current_revenue > 0:
+                        note = "Greater than last month"
+                    else:
+                        note = "Same as last month"
+                else:
+                    if current_revenue > previous_revenue:
+                        note = "Greater than last month"
+                    elif current_revenue < previous_revenue:
+                        note = "Lesser than last month"
+                    else:
+                        note = "Same as last month"
+            
+            month_data['note'] = note
+        
+        return {
+            "success": True,
+            "message": "Monthly revenue data retrieved successfully",
+            "data": {
+                "year": current_year,
+                "current_month": current_month,
+                "monthly_revenue": monthly_revenue
+            }
+        }
+        
+    except Exception as e:
+        print(f"Error in get_contractor_monthly_revenue: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve monthly revenue: {str(e)}"
+        )
 
 if __name__ == "__main__":
     import uvicorn

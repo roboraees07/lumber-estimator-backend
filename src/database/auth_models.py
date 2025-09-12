@@ -357,6 +357,28 @@ class UserAuthManager:
             
             return dict(zip(columns, row))
     
+    def get_user_by_username(self, username: str) -> Optional[Dict]:
+        """Get user by username"""
+        with self.auth_db.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                SELECT id, username, email, role, account_status, first_name, last_name,
+                       company_name, business_license, address, city, state, zip_code,
+                       phone, profile_completed, created_at, approved_at
+                FROM users WHERE username = ?
+            ''', (username,))
+            
+            row = cursor.fetchone()
+            if not row:
+                return None
+            
+            columns = ['id', 'username', 'email', 'role', 'account_status', 'first_name', 'last_name',
+                      'company_name', 'business_license', 'address', 'city', 'state', 'zip_code',
+                      'phone', 'profile_completed', 'created_at', 'approved_at']
+            
+            return dict(zip(columns, row))
+    
     def update_user_profile(self, user_id: int, profile_data: Dict[str, Any]) -> bool:
         """Update user profile information"""
         with self.auth_db.get_connection() as conn:
@@ -367,7 +389,7 @@ class UserAuthManager:
             values = []
             
             for key, value in profile_data.items():
-                if key in ['first_name', 'last_name', 'phone', 'company_name', 'business_license', 
+                if key in ['username', 'email', 'first_name', 'last_name', 'phone', 'company_name', 'business_license', 
                           'address', 'city', 'state', 'zip_code']:
                     update_fields.append(f"{key} = ?")
                     values.append(value)

@@ -48,6 +48,8 @@ class LoginResponse(BaseModel):
     user: Dict[str, Any]
 
 class UserProfileUpdate(BaseModel):
+    username: Optional[str] = None
+    email: Optional[EmailStr] = None
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     phone: Optional[str] = None
@@ -179,7 +181,7 @@ async def login_user(login_data: UserLogin):
     if user['account_status'] != 'approved':
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Account is {user['account_status']}. Please wait for admin approval."
+            detail="Pending Approval"
         )
     
     # Case 3: Success! User exists, password is correct, and account is approved
@@ -200,16 +202,51 @@ async def update_user_profile(
     profile_data: UserProfileUpdate,
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
-    """Update current user's profile"""
-    success = auth_manager.update_user_profile(current_user['id'], profile_data.dict(exclude_unset=True))
-    
-    if not success:
+    """Update current user's profile including username and email"""
+    try:
+        user_id = current_user['id']
+        update_data = profile_data.dict(exclude_unset=True)
+        
+        # Check if username or email is being changed
+        if 'username' in update_data or 'email' in update_data:
+            # Check for uniqueness of username and email
+            if 'username' in update_data:
+                existing_user = auth_manager.get_user_by_username(update_data['username'])
+                if existing_user and existing_user['id'] != user_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Username already exists"
+                    )
+            
+            if 'email' in update_data:
+                existing_user = auth_manager.get_user_by_email(update_data['email'])
+                if existing_user and existing_user['id'] != user_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Email already exists"
+                    )
+        
+        # Update the profile
+        success = auth_manager.update_user_profile(user_id, update_data)
+        
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to update profile"
+            )
+        
+        return {
+            "success": True,
+            "message": "Profile updated successfully"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to update profile"
+            detail=f"Failed to update profile: {str(e)}"
         )
-    
-    return {"message": "Profile updated successfully"}
 
 @router.put("/change-password", response_model=Dict[str, Any])
 async def change_password(
