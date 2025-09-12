@@ -379,6 +379,28 @@ class UserAuthManager:
             
             return dict(zip(columns, row))
     
+    def get_user_by_email(self, email: str) -> Optional[Dict]:
+        """Get user by email address"""
+        with self.auth_db.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                SELECT id, username, email, role, account_status, first_name, last_name,
+                       company_name, business_license, address, city, state, zip_code,
+                       phone, profile_completed, created_at, approved_at
+                FROM users WHERE email = ?
+            ''', (email,))
+            
+            row = cursor.fetchone()
+            if not row:
+                return None
+            
+            columns = ['id', 'username', 'email', 'role', 'account_status', 'first_name', 'last_name',
+                      'company_name', 'business_license', 'address', 'city', 'state', 'zip_code',
+                      'phone', 'profile_completed', 'created_at', 'approved_at']
+            
+            return dict(zip(columns, row))
+    
     def update_user_profile(self, user_id: int, profile_data: Dict[str, Any]) -> bool:
         """Update user profile information"""
         with self.auth_db.get_connection() as conn:
