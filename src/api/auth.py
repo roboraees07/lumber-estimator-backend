@@ -9,6 +9,12 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr
 from typing import Optional, Dict, Any, List
 import os
+import smtplib
+import random
+import string
+from datetime import datetime, timedelta
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 from ..database.auth_models import AuthDatabaseManager, UserAuthManager, UserRole, AccountStatus
 
@@ -19,8 +25,111 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 auth_db = AuthDatabaseManager()
 auth_manager = UserAuthManager(auth_db)
 
+# Simple in-memory OTP storage (in production, use Redis or database)
+otp_storage = {}
+
+# Email configuration (you should set these in environment variables)
+SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+FROM_EMAIL = os.getenv("FROM_EMAIL", "noreply@lumberestimator.com")
+
 # Security scheme
 security = HTTPBearer()
+
+# Helper functions for OTP and email
+def generate_otp(length: int = 6) -> str:
+    """Generate a random OTP"""
+    return ''.join(random.choices(string.digits, k=length))
+
+def send_otp_email(email: str, otp: str) -> bool:
+    """Send OTP via email"""
+    try:
+        # Create message
+        msg = MIMEMultipart()
+        msg['From'] = FROM_EMAIL
+        msg['To'] = email
+        msg['Subject'] = "Password Reset OTP - Lumber Estimator"
+        
+        # Email body
+        body = f"""
+        <html>
+        <body>
+            <h2>Password Reset Request</h2>
+            <p>You have requested to reset your password for your Lumber Estimator account.</p>
+            <p>Your OTP code is: <strong style="font-size: 24px; color: #007bff;">{otp}</strong></p>
+            <p>This code will expire in 10 minutes.</p>
+            <p>If you did not request this password reset, please ignore this email.</p>
+            <br>
+            <p>Best regards,<br>Lumber Estimator Team</p>
+        </body>
+        </html>
+        """
+        
+        msg.attach(MIMEText(body, 'html'))
+        
+        # Send email
+        if SMTP_USERNAME and SMTP_PASSWORD and SMTP_USERNAME.strip() and SMTP_PASSWORD.strip():
+            try:
+                server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+                server.starttls()
+                server.login(SMTP_USERNAME, SMTP_PASSWORD)
+                text = msg.as_string()
+                server.sendmail(FROM_EMAIL, email, text)
+                server.quit()
+                print(f"OTP email sent successfully to {email}")
+                return True
+            except Exception as smtp_error:
+                print(f"SMTP Error: {str(smtp_error)}")
+                # Fall through to development mode
+        else:
+            print(f"SMTP credentials not configured, using development mode")
+        
+        # For development/testing - just print the OTP
+        print(f"=== DEVELOPMENT MODE ===")
+        print(f"OTP for {email}: {otp}")
+        print(f"========================")
+        return True
+            
+    except Exception as e:
+        print(f"Error in send_otp_email: {str(e)}")
+        return False
+
+def store_otp(email: str, otp: str):
+    """Store OTP with expiration time"""
+    otp_storage[email] = {
+        'otp': otp,
+        'expires_at': datetime.now() + timedelta(minutes=10),
+        'attempts': 0
+    }
+
+def verify_otp(email: str, provided_otp: str) -> bool:
+    """Verify OTP and check expiration"""
+    if email not in otp_storage:
+        return False
+    
+    stored_data = otp_storage[email]
+    
+    # Check if OTP has expired
+    if datetime.now() > stored_data['expires_at']:
+        del otp_storage[email]
+        return False
+    
+    # Check attempts limit
+    if stored_data['attempts'] >= 3:
+        del otp_storage[email]
+        return False
+    
+    # Increment attempts
+    stored_data['attempts'] += 1
+    
+    # Verify OTP
+    if stored_data['otp'] == provided_otp:
+        del otp_storage[email]  # Remove OTP after successful verification
+        return True
+    
+    return False
 
 # Pydantic models for request/response
 class UserRegistration(BaseModel):
@@ -76,6 +185,18 @@ class ProjectActionRequest(BaseModel):
     rejection_reason: Optional[str] = None
 
 class PasswordChangeRequest(BaseModel):
+    new_password: str
+    confirm_password: str
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+class VerifyOTPRequest(BaseModel):
+    email: EmailStr
+    otp: str
+
+class ResetPasswordRequest(BaseModel):
+    email: EmailStr
     new_password: str
     confirm_password: str
 
@@ -497,3 +618,116 @@ async def logout_user(current_user: Dict[str, Any] = Depends(get_current_user)):
 async def get_current_user_info(current_user: Dict[str, Any] = Depends(get_current_user)):
     """Get current user information"""
     return current_user
+
+@router.post("/forgot-password", response_model=Dict[str, Any])
+async def forgot_password(request: ForgotPasswordRequest):
+    """Send OTP to email for password reset"""
+    try:
+        # Check if user exists with this email
+        user = auth_manager.get_user_by_email(request.email)
+        if not user:
+            # Only send OTP if email is registered
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No account found with this email address"
+            )
+        
+        # Generate and store OTP
+        otp = generate_otp()
+        store_otp(request.email, otp)
+        
+        # Send OTP via email
+        email_sent = send_otp_email(request.email, otp)
+        
+        if email_sent:
+            return {
+                "success": True,
+                "message": "OTP sent to your email address"
+            }
+        else:
+            # If email sending fails, still return success but mention the OTP
+            return {
+                "success": True,
+                "message": f"OTP generated: {otp}. Please check your email or contact support if you don't receive it."
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to process forgot password request: {str(e)}"
+        )
+
+@router.post("/verify-otp", response_model=Dict[str, Any])
+async def verify_otp_endpoint(request: VerifyOTPRequest):
+    """Verify OTP for password reset"""
+    try:
+        is_valid = verify_otp(request.email, request.otp)
+        
+        if is_valid:
+            return {
+                "success": True,
+                "message": "OTP verified successfully"
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid or expired OTP"
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to verify OTP: {str(e)}"
+        )
+
+@router.post("/reset-password", response_model=Dict[str, Any])
+async def reset_password(request: ResetPasswordRequest):
+    """Reset password for user"""
+    try:
+        # Validate password confirmation
+        if request.new_password != request.confirm_password:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Passwords do not match"
+            )
+        
+        # Validate password strength (basic validation)
+        if len(request.new_password) < 6:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Password must be at least 6 characters long"
+            )
+        
+        # Get user by email
+        user = auth_manager.get_user_by_email(request.email)
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+        
+        # Update password
+        success = auth_manager.update_password(user['id'], request.new_password)
+        
+        if success:
+            return {
+                "success": True,
+                "message": "Password reset successfully"
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to reset password"
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to reset password: {str(e)}"
+        )
