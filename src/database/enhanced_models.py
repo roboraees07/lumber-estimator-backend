@@ -1804,6 +1804,28 @@ class QuotationItemManager:
             
             return items
     
+    def get_item(self, item_id: int) -> Optional[Dict]:
+        """Get a single quotation item by ID"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT * FROM quotation_items 
+                WHERE id = ?
+            ''', (item_id,))
+            
+            row = cursor.fetchone()
+            if not row:
+                return None
+            
+            columns = [desc[0] for desc in cursor.description]
+            item = dict(zip(columns, row))
+            
+            # Return N/A for empty SKU
+            if not item['sku']:
+                item['sku'] = 'N/A'
+            
+            return item
+    
     def update_item(self, item_id: int, updates: Dict[str, Any]) -> bool:
         """Update quotation item"""
         if not updates:
@@ -1811,6 +1833,11 @@ class QuotationItemManager:
         
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
+            
+            # First verify the item exists
+            cursor.execute('SELECT id FROM quotation_items WHERE id = ?', (item_id,))
+            if not cursor.fetchone():
+                return False
             
             # If cost or quantity is being updated, recalculate total_cost
             if 'cost' in updates or 'quantity' in updates:
@@ -1825,21 +1852,32 @@ class QuotationItemManager:
             set_clause = ', '.join([f"{key} = ?" for key in updates.keys()])
             values = list(updates.values()) + [item_id]
             
-            cursor.execute(f'''
-                UPDATE quotation_items 
-                SET {set_clause}, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-            ''', values)
-            
-            if cursor.rowcount > 0:
-                # Get quotation_id to update total
-                cursor.execute('SELECT quotation_id FROM quotation_items WHERE id = ?', (item_id,))
-                result = cursor.fetchone()
-                if result:
-                    self._update_quotation_total_cost(result[0], conn)
-            
-            conn.commit()
-            return cursor.rowcount > 0
+            try:
+                cursor.execute(f'''
+                    UPDATE quotation_items 
+                    SET {set_clause}, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                ''', values)
+                
+                # Check rowcount before commit (rowcount might be reset after commit)
+                rows_affected = cursor.rowcount
+                
+                # Always update quotation total cost if cost/quantity was modified
+                if 'cost' in updates or 'quantity' in updates or 'total_cost' in updates:
+                    cursor.execute('SELECT quotation_id FROM quotation_items WHERE id = ?', (item_id,))
+                    result = cursor.fetchone()
+                    if result:
+                        self._update_quotation_total_cost(result[0], conn)
+                
+                conn.commit()
+                
+                # Consider successful if item exists and query executed without error
+                # rowcount = 0 means no changes were made (same values), but that's still "successful"
+                return True
+                
+            except Exception as e:
+                conn.rollback()
+                return False
     
     def delete_item(self, item_id: int) -> bool:
         """Delete quotation item"""

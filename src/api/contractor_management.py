@@ -1453,7 +1453,12 @@ async def edit_quotation_item(
         success = item_manager.update_item(item_id, update_data)
         
         if not success:
-            raise HTTPException(status_code=500, detail="Failed to update item")
+            # Double-check if item still exists
+            item_check = item_manager.get_item(item_id)
+            if not item_check:
+                raise HTTPException(status_code=404, detail="Item not found - may have been deleted")
+            else:
+                raise HTTPException(status_code=500, detail="Failed to update item - database error occurred")
         
         # Get updated item details
         updated_item = item_manager.get_item(item_id)
