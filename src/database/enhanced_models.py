@@ -1006,6 +1006,14 @@ class ProjectManager:
             conn.commit()
             return cursor.rowcount > 0
     
+    def get_project_status(self, project_id: int) -> Optional[str]:
+        """Get current project status"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT status FROM projects WHERE id = ?', (project_id,))
+            result = cursor.fetchone()
+            return result[0] if result else None
+    
     def update_project_approval_status(self, project_id: int, admin_id: int, action: str, rejection_reason: str = None) -> bool:
         """Update project approval status (approve/reject) with admin tracking"""
         with self.db.get_connection() as conn:
@@ -1111,8 +1119,16 @@ class ProjectManager:
             # Add search filter if provided
             if search:
                 search_param = f'%{search}%'
-                base_query += ' AND (u.first_name LIKE ? OR u.last_name LIKE ? OR u.username LIKE ? OR u.company_name LIKE ?)'
-                params.extend([search_param, search_param, search_param, search_param])
+                # Enhanced search across first_name, last_name, username, company_name, email, and full name
+                base_query += ''' AND (
+                    LOWER(u.first_name) LIKE LOWER(?) OR 
+                    LOWER(u.last_name) LIKE LOWER(?) OR 
+                    LOWER(u.username) LIKE LOWER(?) OR 
+                    LOWER(u.company_name) LIKE LOWER(?) OR 
+                    LOWER(u.email) LIKE LOWER(?) OR
+                    LOWER(u.first_name || ' ' || u.last_name) LIKE LOWER(?)
+                )'''
+                params.extend([search_param, search_param, search_param, search_param, search_param, search_param])
             
             # Complete the query
             base_query += '''
@@ -1170,8 +1186,16 @@ class ProjectManager:
             # Add search filter if provided
             if search:
                 search_param = f'%{search}%'
-                base_query += ' AND (u.first_name LIKE ? OR u.last_name LIKE ? OR u.username LIKE ? OR u.company_name LIKE ?)'
-                params.extend([search_param, search_param, search_param, search_param])
+                # Enhanced search across first_name, last_name, username, company_name, email, and full name
+                base_query += ''' AND (
+                    LOWER(u.first_name) LIKE LOWER(?) OR 
+                    LOWER(u.last_name) LIKE LOWER(?) OR 
+                    LOWER(u.username) LIKE LOWER(?) OR 
+                    LOWER(u.company_name) LIKE LOWER(?) OR 
+                    LOWER(u.email) LIKE LOWER(?) OR
+                    LOWER(u.first_name || ' ' || u.last_name) LIKE LOWER(?)
+                )'''
+                params.extend([search_param, search_param, search_param, search_param, search_param, search_param])
             
             base_query += ' ORDER BY u.created_at DESC'
             
@@ -1432,8 +1456,16 @@ class QuotationManager:
             # Add search filter if provided
             if search:
                 search_param = f'%{search}%'
-                base_query += ' AND (u.first_name LIKE ? OR u.last_name LIKE ? OR u.username LIKE ? OR u.company_name LIKE ?)'
-                params.extend([search_param, search_param, search_param, search_param])
+                # Enhanced search across first_name, last_name, username, company_name, email, and full name
+                base_query += ''' AND (
+                    LOWER(u.first_name) LIKE LOWER(?) OR 
+                    LOWER(u.last_name) LIKE LOWER(?) OR 
+                    LOWER(u.username) LIKE LOWER(?) OR 
+                    LOWER(u.company_name) LIKE LOWER(?) OR 
+                    LOWER(u.email) LIKE LOWER(?) OR
+                    LOWER(u.first_name || ' ' || u.last_name) LIKE LOWER(?)
+                )'''
+                params.extend([search_param, search_param, search_param, search_param, search_param, search_param])
             
             # Complete the query
             base_query += '''

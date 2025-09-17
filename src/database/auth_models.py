@@ -599,6 +599,13 @@ class UserAuthManager:
             cursor.execute('SELECT COUNT(*) FROM users WHERE account_status = ?', ('approved',))
             return cursor.fetchone()[0]
     
+    def get_active_non_admin_users_count(self) -> int:
+        """Get count of approved users excluding admin role (estimators and contractors only)"""
+        with self.auth_db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(*) FROM users WHERE account_status = ? AND role != ?', ('approved', 'admin'))
+            return cursor.fetchone()[0]
+    
     def get_user_signups_by_date_range(self, start_date: str, end_date: str) -> Dict[str, int]:
         """Get total user signups by role within date range"""
         with self.auth_db.get_connection() as conn:
