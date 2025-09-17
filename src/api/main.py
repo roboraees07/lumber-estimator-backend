@@ -3141,7 +3141,14 @@ async def get_admin_contractors_dashboard(
     search: Optional[str] = None,
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
-    """Get contractors list with quotation statistics for admin dashboard"""
+    """Get contractors list with quotation statistics for admin dashboard
+    
+    Search functionality:
+    - Searches across: first_name, last_name, username, company_name, email, and full name
+    - Case-insensitive search
+    - Partial matching supported
+    - Example searches: 'john', 'smith', 'john smith', 'john@example.com', 'ABC Corp'
+    """
     try:
         # Check if user is admin
         if current_user.get("role") != "admin":
@@ -3324,7 +3331,14 @@ async def get_admin_estimators_dashboard(
     search: Optional[str] = None,
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
-    """Get estimators list with project statistics for admin dashboard"""
+    """Get estimators list with project statistics for admin dashboard
+    
+    Search functionality:
+    - Searches across: first_name, last_name, username, company_name, email, and full name
+    - Case-insensitive search
+    - Partial matching supported
+    - Example searches: 'jane', 'doe', 'jane doe', 'jane@example.com', 'XYZ Construction'
+    """
     try:
         # Check if user is admin
         if current_user.get("role") != "admin":
@@ -3397,7 +3411,14 @@ async def debug_admin_estimators(
 async def get_admin_dashboard_stats(
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
-    """Get dashboard statistics for admin panel"""
+    """Get dashboard statistics for admin panel
+    
+    Returns:
+    - pending_requests: Number of pending user approval requests
+    - total_active_users: Number of active users (estimators and contractors only, excludes admin users)
+    - estimates_created_this_month: Number of estimates created in current month
+    - quotations_added_this_month: Number of quotations added in current month
+    """
     try:
         # Check if user is admin
         if current_user.get("role") != "admin":
@@ -3416,7 +3437,7 @@ async def get_admin_dashboard_stats(
         
         # Get all dashboard statistics
         pending_requests = auth_manager.get_pending_requests_count()
-        total_active_users = auth_manager.get_active_users_count()
+        total_active_users = auth_manager.get_active_non_admin_users_count()  # Excludes admin users
         
         # Get current month date range
         from datetime import datetime, timedelta

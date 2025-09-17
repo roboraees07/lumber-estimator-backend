@@ -1111,8 +1111,16 @@ class ProjectManager:
             # Add search filter if provided
             if search:
                 search_param = f'%{search}%'
-                base_query += ' AND (u.first_name LIKE ? OR u.last_name LIKE ? OR u.username LIKE ? OR u.company_name LIKE ?)'
-                params.extend([search_param, search_param, search_param, search_param])
+                # Enhanced search across first_name, last_name, username, company_name, email, and full name
+                base_query += ''' AND (
+                    LOWER(u.first_name) LIKE LOWER(?) OR 
+                    LOWER(u.last_name) LIKE LOWER(?) OR 
+                    LOWER(u.username) LIKE LOWER(?) OR 
+                    LOWER(u.company_name) LIKE LOWER(?) OR 
+                    LOWER(u.email) LIKE LOWER(?) OR
+                    LOWER(u.first_name || ' ' || u.last_name) LIKE LOWER(?)
+                )'''
+                params.extend([search_param, search_param, search_param, search_param, search_param, search_param])
             
             # Complete the query
             base_query += '''
@@ -1170,8 +1178,16 @@ class ProjectManager:
             # Add search filter if provided
             if search:
                 search_param = f'%{search}%'
-                base_query += ' AND (u.first_name LIKE ? OR u.last_name LIKE ? OR u.username LIKE ? OR u.company_name LIKE ?)'
-                params.extend([search_param, search_param, search_param, search_param])
+                # Enhanced search across first_name, last_name, username, company_name, email, and full name
+                base_query += ''' AND (
+                    LOWER(u.first_name) LIKE LOWER(?) OR 
+                    LOWER(u.last_name) LIKE LOWER(?) OR 
+                    LOWER(u.username) LIKE LOWER(?) OR 
+                    LOWER(u.company_name) LIKE LOWER(?) OR 
+                    LOWER(u.email) LIKE LOWER(?) OR
+                    LOWER(u.first_name || ' ' || u.last_name) LIKE LOWER(?)
+                )'''
+                params.extend([search_param, search_param, search_param, search_param, search_param, search_param])
             
             base_query += ' ORDER BY u.created_at DESC'
             
@@ -1432,8 +1448,16 @@ class QuotationManager:
             # Add search filter if provided
             if search:
                 search_param = f'%{search}%'
-                base_query += ' AND (u.first_name LIKE ? OR u.last_name LIKE ? OR u.username LIKE ? OR u.company_name LIKE ?)'
-                params.extend([search_param, search_param, search_param, search_param])
+                # Enhanced search across first_name, last_name, username, company_name, email, and full name
+                base_query += ''' AND (
+                    LOWER(u.first_name) LIKE LOWER(?) OR 
+                    LOWER(u.last_name) LIKE LOWER(?) OR 
+                    LOWER(u.username) LIKE LOWER(?) OR 
+                    LOWER(u.company_name) LIKE LOWER(?) OR 
+                    LOWER(u.email) LIKE LOWER(?) OR
+                    LOWER(u.first_name || ' ' || u.last_name) LIKE LOWER(?)
+                )'''
+                params.extend([search_param, search_param, search_param, search_param, search_param, search_param])
             
             # Complete the query
             base_query += '''
