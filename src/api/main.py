@@ -3259,7 +3259,14 @@ async def project_action(
     action_request: ProjectActionRequest,
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
-    """Approve or reject an estimator project (Admin and Contractor access)"""
+    """Approve or reject an estimator project (Admin and Contractor access)
+    
+    Behavior:
+    - If project is already approved/rejected: Returns success with "already processed" message
+    - If project is pending: Processes the approval/rejection
+    - If project not found: Returns 404 error
+    - If invalid status for action: Returns 400 error
+    """
     try:
         # Check if user is admin or contractor
         user_role = current_user.get("role")
@@ -3289,6 +3296,27 @@ async def project_action(
         db_manager = EnhancedDatabaseManager()
         project_manager = ProjectManager(db_manager)
         
+        # Check if project exists first
+        current_status = project_manager.get_project_status(project_id)
+        if not current_status:
+            raise HTTPException(
+                status_code=404, 
+                detail="Project not found"
+            )
+        
+        # Check if project is already processed
+        if current_status in ['approved', 'rejected']:
+            status_message = "approved" if current_status == "approved" else "rejected"
+            return {
+                "success": True,
+                "message": f"Project already {status_message}",
+                "data": {
+                    "project_id": project_id, 
+                    "status": current_status,
+                    "note": "No action taken - project was already processed"
+                }
+            }
+        
         # Update project status
         success = project_manager.update_project_approval_status(
             project_id, 
@@ -3299,8 +3327,8 @@ async def project_action(
         
         if not success:
             raise HTTPException(
-                status_code=404, 
-                detail="Project not found or already processed"
+                status_code=400, 
+                detail="Unable to process project - invalid status for this action"
             )
         
         # Return appropriate response
@@ -4643,7 +4671,7 @@ async def get_contractor_pending_projects(
             
             project_data = {
                 "project_id": project.get('id'),
-                "project_name": project.get('project_name', 'Unnamed Project'),
+                "project_name": project.get('name', 'Unnamed Project'),
                 "estimator_name": estimator_name,
                 "total_items": total_items,
                 "total_cost": total_cost,

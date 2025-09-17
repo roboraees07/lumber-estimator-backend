@@ -1006,6 +1006,14 @@ class ProjectManager:
             conn.commit()
             return cursor.rowcount > 0
     
+    def get_project_status(self, project_id: int) -> Optional[str]:
+        """Get current project status"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT status FROM projects WHERE id = ?', (project_id,))
+            result = cursor.fetchone()
+            return result[0] if result else None
+    
     def update_project_approval_status(self, project_id: int, admin_id: int, action: str, rejection_reason: str = None) -> bool:
         """Update project approval status (approve/reject) with admin tracking"""
         with self.db.get_connection() as conn:
