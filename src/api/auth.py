@@ -462,7 +462,14 @@ async def get_all_users(
     offset: int = 0,
     admin_user: Dict[str, Any] = Depends(get_admin_user)
 ):
-    """Get all users with filtering and pagination (Admin only) - excludes admin users"""
+    """Get all users with filtering and pagination (Admin only) - excludes admin users
+    
+    Search functionality:
+    - Searches across: first_name, last_name, username, email, and full name
+    - Case-insensitive search
+    - Partial matching supported
+    - Example searches: 'john', 'smith', 'john smith', 'john@example.com', 'jsmith'
+    """
     try:
         result = auth_manager.get_users_with_filters(
             search=search,
