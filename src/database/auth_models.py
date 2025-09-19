@@ -490,12 +490,25 @@ class UserAuthManager:
             
             params = []
             
-            # Add search filter (name or email)
+            # Add search filter (name, email, username, and full name)
             if search:
                 search_param = f'%{search}%'
-                base_query += ' AND (first_name LIKE ? OR last_name LIKE ? OR email LIKE ? OR username LIKE ?)'
-                count_query += ' AND (first_name LIKE ? OR last_name LIKE ? OR email LIKE ? OR username LIKE ?)'
-                params.extend([search_param, search_param, search_param, search_param])
+                # Enhanced search across first_name, last_name, username, email, and full name
+                base_query += ''' AND (
+                    LOWER(first_name) LIKE LOWER(?) OR 
+                    LOWER(last_name) LIKE LOWER(?) OR 
+                    LOWER(username) LIKE LOWER(?) OR 
+                    LOWER(email) LIKE LOWER(?) OR
+                    LOWER(first_name || ' ' || last_name) LIKE LOWER(?)
+                )'''
+                count_query += ''' AND (
+                    LOWER(first_name) LIKE LOWER(?) OR 
+                    LOWER(last_name) LIKE LOWER(?) OR 
+                    LOWER(username) LIKE LOWER(?) OR 
+                    LOWER(email) LIKE LOWER(?) OR
+                    LOWER(first_name || ' ' || last_name) LIKE LOWER(?)
+                )'''
+                params.extend([search_param, search_param, search_param, search_param, search_param])
             
             # Add role filter (exclude admin from filter options)
             if role and role.lower() in ['contractor', 'estimator']:
